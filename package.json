@@ -1,0 +1,52 @@
+{
+  "name": "starlight-openapi-navigator",
+  "version": "0.0.0",
+  "description": "Starlight integration that generates hybrid API docs from an OpenAPI specification.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": {
+      "import": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "parser",
+    "pages",
+    "components",
+    "runtime",
+    "AGENTS.md",
+    "TODO.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "astro",
+    "starlight",
+    "openapi",
+    "api-docs",
+    "integration"
+  ],
+  "license": "MIT",
+  "author": "Scott Beck",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/example/starlight-openapi-navigator.git"
+  },
+  "bugs": {
+    "url": "https://github.com/example/starlight-openapi-navigator/issues"
+  },
+  "homepage": "https://github.com/example/starlight-openapi-navigator#readme",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "peerDependencies": {
+    "@astrojs/starlight": "^0.36.0",
+    "astro": "^5.14.4"
+  },
+  "dependencies": {
+    "yaml": "^2.4.2"
+  }
+}

@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { DEFAULT_BASE_SLUG } from '../runtime/config.js';
 
@@ -17,14 +18,8 @@ import { DEFAULT_BASE_SLUG } from '../runtime/config.js';
  * @property {string} baseSlug
  */
 
-const PROJECT_ROOT = process.cwd();
-const COMPONENTS_DIR = path.join(
-  PROJECT_ROOT,
-  'src',
-  'integrations',
-  'starlight-openapi-navigator',
-  'components'
-);
+const PACKAGE_ROOT = fileURLToPath(new URL('..', import.meta.url));
+const COMPONENTS_DIR = path.join(PACKAGE_ROOT, 'components');
 
 const OVERVIEW_COMPONENT = 'OpenApiOverview.astro';
 const OPERATION_COMPONENT = 'OpenApiOperationPage.astro';
