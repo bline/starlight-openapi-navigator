@@ -1,0 +1,383 @@
+---
+const {
+  name = null,
+  schema,
+  required = false,
+  depth = 0,
+  slugMap,
+} = Astro.props;
+
+const displayName = name ?? 'value';
+const nodeClass = `schema-node depth-${depth}`;
+const showRequirement = name !== null;
+
+const pillClassBase = required ? 'schema-node__pill schema-node__pill--required' : 'schema-node__pill schema-node__pill--optional';
+const pillLabel = required ? 'Required' : 'Optional';
+
+const sanitizeTypeClass = (value) => {
+  if (!value) return '';
+  return value.toString().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+};
+
+const buildTypeClass = (base) => {
+  const safe = sanitizeTypeClass(base);
+  return safe ? `schema-node__type schema-node__type--${safe}` : 'schema-node__type';
+};
+
+const resolveSchemaReference = (ref) => {
+  if (typeof ref !== 'string') return undefined;
+  const match = ref.match(/#\/components\/schemas\/(.+)$/);
+  if (!match) return undefined;
+  const refName = match[1];
+  const slug = slugMap?.get(refName) ?? refName.toLowerCase();
+  return { name: refName, slug };
+};
+
+const inferType = (value) => {
+  if (!value || typeof value !== 'object') return 'any';
+  if (value.type) return value.type;
+  if (value.properties) return 'object';
+  if (value.items) return 'array';
+  if (value.enum) return 'enum';
+  return 'any';
+};
+
+const SchemaNode = Astro.self;
+
+const normalizedSchema = schema && typeof schema === 'object' ? schema : null;
+const type = inferType(normalizedSchema);
+const properties = normalizedSchema?.properties && typeof normalizedSchema.properties === 'object'
+  ? Object.entries(normalizedSchema.properties)
+  : [];
+const requiredSet = new Set(Array.isArray(normalizedSchema?.required) ? normalizedSchema.required : []);
+const items = normalizedSchema?.items;
+const examples = Array.isArray(normalizedSchema?.examples)
+  ? normalizedSchema.examples
+  : normalizedSchema?.example !== undefined
+    ? [normalizedSchema.example]
+    : [];
+const combinationEntries = [
+  ['allOf', normalizedSchema?.allOf],
+  ['oneOf', normalizedSchema?.oneOf],
+  ['anyOf', normalizedSchema?.anyOf],
+].filter(([, list]) => Array.isArray(list) && list.length);
+
+const schemaFormat = typeof normalizedSchema?.format === 'string' ? normalizedSchema.format : '';
+const baseTypeLabel = type || 'any';
+const typeLabel = schemaFormat ? `${baseTypeLabel} (${schemaFormat})` : baseTypeLabel;
+
+const hasDescription = typeof normalizedSchema?.description === 'string' && normalizedSchema.description.trim().length > 0;
+const hasEnum = Array.isArray(normalizedSchema?.enum) && normalizedSchema.enum.length > 0;
+const hasDefault = normalizedSchema?.default !== undefined;
+const hasExamples = examples.length > 0;
+const hasComposed = combinationEntries.length > 0;
+const hasObjectContent = type === 'object';
+const hasArrayContent = type === 'array';
+const hasExpandableContent =
+  hasDescription
+  || hasEnum
+  || hasDefault
+  || hasExamples
+  || hasComposed
+  || hasObjectContent
+  || hasArrayContent;
+const isRootNode = depth === 0 && name === null;
+---
+{!normalizedSchema ? (
+  <li class={nodeClass}>
+    <div class="schema-node__details schema-node__details--static">
+      <div class="schema-node__row">
+        {(name || showRequirement) && (
+          <span class="schema-node__summary">
+            {name && <code class="schema-node__name">{displayName}</code>}
+            {showRequirement && <span class={pillClassBase}>{pillLabel}</span>}
+          </span>
+        )}
+        <span class={buildTypeClass('any')}>any</span>
+      </div>
+    </div>
+  </li>
+) : normalizedSchema.$ref ? (
+  (() => {
+    const ref = resolveSchemaReference(normalizedSchema.$ref);
+    if (!ref) {
+      return (
+        <li class={nodeClass}>
+          <div class="schema-node__details schema-node__details--static">
+            <div class="schema-node__row">
+              {(name || showRequirement) && (
+                <span class="schema-node__summary">
+                  {name && <code class="schema-node__name">{displayName}</code>}
+                  {showRequirement && <span class={pillClassBase}>{pillLabel}</span>}
+                </span>
+              )}
+              <span class={buildTypeClass('$ref')}>$ref</span>
+            </div>
+          </div>
+        </li>
+      );
+    }
+    return (
+      <li class={nodeClass}>
+        <div class="schema-node__details schema-node__details--static">
+          <div class="schema-node__row">
+            {(name || showRequirement) && (
+              <span class="schema-node__summary">
+                {name && <code class="schema-node__name">{displayName}</code>}
+                {showRequirement && <span class={pillClassBase}>{pillLabel}</span>}
+              </span>
+            )}
+            <span class="schema-node__reference">
+              <a class="schema-node__link" href={`#${ref.slug}`}>
+                {ref.name}
+              </a>
+            </span>
+          </div>
+        </div>
+      </li>
+    );
+  })()
+) : (
+  <li class={nodeClass}>
+    {isRootNode ? (
+      <div class="schema-node__root">
+        <div class="schema-node__content">
+          {Array.isArray(normalizedSchema?.enum) && normalizedSchema.enum.length > 0 && (
+            <div class="schema-node__enum">
+              <strong>Enum values:</strong>
+              <ul>
+                {normalizedSchema.enum.map((value, idx) => (
+                  <li key={`enum-${idx}`}><code>{String(value)}</code></li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {normalizedSchema?.default !== undefined && (
+            <div class="schema-node__meta">
+              <strong>Default:</strong>{' '}
+              <code>{String(normalizedSchema.default)}</code>
+            </div>
+          )}
+
+          {examples.length > 0 && (
+            <div class="schema-node__examples">
+              <strong>Examples:</strong>
+              <ul>
+                {examples.map((example, index) => (
+                  <li key={`example-${index}`}><code>{String(example)}</code></li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {combinationEntries.length > 0 && (
+            <div class="schema-node__composed">
+              {combinationEntries.map(([label, list]) => (
+                <div class="schema-node__composed-group" key={label}>
+                  <h4>{label}</h4>
+                  <ul class="schema-node__children">
+                    {list.map((item, idx) => (
+                      <SchemaNode
+                        key={`${label}-${idx}`}
+                        name={`${label}[${idx}]`}
+                        schema={item}
+                        required={false}
+                        depth={depth + 1}
+                        slugMap={slugMap}
+                      />
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {type === 'object' && (
+            properties.length ? (
+              <ul class="schema-node__children">
+                {properties.map(([propName, propSchema]) => (
+                  <SchemaNode
+                    key={`${displayName}-prop-${propName}`}
+                    name={propName}
+                    schema={propSchema}
+                    required={requiredSet.has(propName)}
+                    depth={depth + 1}
+                    slugMap={slugMap}
+                  />
+                ))}
+              </ul>
+            ) : (
+              <p class="schema-node__empty">No declared properties.</p>
+            )
+          )}
+
+          {type === 'array' && (
+            <div class="schema-node__array">
+              <h4>Items</h4>
+              {Array.isArray(items) ? (
+                <ul class="schema-node__children">
+                  {items.map((itemSchema, index) => (
+                    <SchemaNode
+                      key={`${displayName}-item-${index}`}
+                      name={`[${index}]`}
+                      schema={itemSchema}
+                      depth={depth + 1}
+                      slugMap={slugMap}
+                    />
+                  ))}
+                </ul>
+              ) : items ? (
+                <ul class="schema-node__children">
+                  <SchemaNode
+                    key={`${displayName}-item`}
+                    name={'item'}
+                    schema={items}
+                    depth={depth + 1}
+                    slugMap={slugMap}
+                  />
+                </ul>
+              ) : (
+                <p class="schema-node__empty">Any item type</p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    ) : hasExpandableContent ? (
+      <details class="schema-node__details">
+        <summary class="schema-node__row">
+          {(name || showRequirement) && (
+            <span class="schema-node__summary">
+              {name && <code class="schema-node__name">{displayName}</code>}
+              {showRequirement && <span class={pillClassBase}>{pillLabel}</span>}
+            </span>
+          )}
+          <span class={buildTypeClass(baseTypeLabel || 'any')}>
+            {typeLabel || 'any'}
+          </span>
+        </summary>
+        <div class="schema-node__content">
+          {normalizedSchema?.description && (
+            <p class="schema-node__description">{normalizedSchema.description}</p>
+          )}
+
+          {Array.isArray(normalizedSchema?.enum) && normalizedSchema.enum.length > 0 && (
+            <div class="schema-node__enum">
+              <strong>Enum values:</strong>
+              <ul>
+                {normalizedSchema.enum.map((value, idx) => (
+                  <li key={`enum-${idx}`}><code>{String(value)}</code></li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {normalizedSchema?.default !== undefined && (
+            <div class="schema-node__meta">
+              <strong>Default:</strong>{' '}
+              <code>{String(normalizedSchema.default)}</code>
+            </div>
+          )}
+
+          {examples.length > 0 && (
+            <div class="schema-node__examples">
+              <strong>Examples:</strong>
+              <ul>
+                {examples.map((example, index) => (
+                  <li key={`example-${index}`}><code>{String(example)}</code></li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {combinationEntries.length > 0 && (
+            <div class="schema-node__composed">
+              {combinationEntries.map(([label, list]) => (
+                <div class="schema-node__composed-group" key={label}>
+                  <h4>{label}</h4>
+                  <ul class="schema-node__children">
+                    {list.map((item, idx) => (
+                      <SchemaNode
+                        key={`${label}-${idx}`}
+                        name={`${label}[${idx}]`}
+                        schema={item}
+                        required={false}
+                        depth={depth + 1}
+                        slugMap={slugMap}
+                      />
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {type === 'object' && (
+            properties.length ? (
+              <ul class="schema-node__children">
+                {properties.map(([propName, propSchema]) => (
+                  <SchemaNode
+                    key={`${displayName}-prop-${propName}`}
+                    name={propName}
+                    schema={propSchema}
+                    required={requiredSet.has(propName)}
+                    depth={depth + 1}
+                    slugMap={slugMap}
+                  />
+                ))}
+              </ul>
+            ) : (
+              <p class="schema-node__empty">No declared properties.</p>
+            )
+          )}
+
+          {type === 'array' && (
+            <div class="schema-node__array">
+              <h4>Items</h4>
+              {Array.isArray(items) ? (
+                <ul class="schema-node__children">
+                  {items.map((itemSchema, index) => (
+                    <SchemaNode
+                      key={`${displayName}-item-${index}`}
+                      name={`[${index}]`}
+                      schema={itemSchema}
+                      depth={depth + 1}
+                      slugMap={slugMap}
+                    />
+                  ))}
+                </ul>
+              ) : items ? (
+                <ul class="schema-node__children">
+                  <SchemaNode
+                    key={`${displayName}-item`}
+                    name={'item'}
+                    schema={items}
+                    depth={depth + 1}
+                    slugMap={slugMap}
+                  />
+                </ul>
+              ) : (
+                <p class="schema-node__empty">Any item type</p>
+              )}
+            </div>
+          )}
+        </div>
+      </details>
+    ) : (
+      <div class="schema-node__details schema-node__details--static">
+        <div class="schema-node__row">
+          {(name || showRequirement) && (
+            <span class="schema-node__summary">
+              {name && <code class="schema-node__name">{displayName}</code>}
+              {showRequirement && <span class={pillClassBase}>{pillLabel}</span>}
+            </span>
+          )}
+          <span class={buildTypeClass(baseTypeLabel || 'any')}>
+            {typeLabel || 'any'}
+          </span>
+        </div>
+      </div>
+    )}
+  </li>
+)}

@@ -1,0 +1,253 @@
+---
+const {
+  fields = [],
+  optionId = 'body',
+  initialValue = {},
+} = Astro.props;
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+const rootValue = isPlainObject(initialValue) ? initialValue : {};
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function toPathKey(path) {
+  return Array.isArray(path) && path.length ? path.join('.') : '';
+}
+
+function toFieldId(path) {
+  const key = toPathKey(path);
+  if (!key) return optionId;
+  return `${optionId}-${key.replace(/[^a-zA-Z0-9_-]+/g, '-')}`;
+}
+
+function formatLabel(name, fallback = 'Object') {
+  if (!name) return fallback;
+  return name
+    .replace(/_/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normaliseString(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+}
+
+function valueForPath(path) {
+  if (!Array.isArray(path) || !path.length) return rootValue;
+  return path.reduce((acc, segment) => {
+    if (!acc || typeof acc !== 'object') return undefined;
+    return acc[segment];
+  }, rootValue);
+}
+
+function primitiveInitialValue(field) {
+  const dataValue = valueForPath(field.path);
+  if (field.type === 'boolean') {
+    if (typeof dataValue === 'boolean') return dataValue ? 'true' : 'false';
+    if (typeof field.default === 'boolean') return field.default ? 'true' : 'false';
+    return field.required ? 'true' : '';
+  }
+  if (field.type === 'number' || field.type === 'integer') {
+    if (typeof dataValue === 'number') return String(dataValue);
+    if (typeof field.default === 'number') return String(field.default);
+    if (typeof field.example === 'number') return String(field.example);
+    return '';
+  }
+  const raw = dataValue !== undefined ? dataValue : field.default ?? field.example;
+  const normalised = normaliseString(raw);
+  if (!normalised && Array.isArray(field.enum) && field.required) {
+    return normaliseString(field.enum[0]);
+  }
+  return normalised;
+}
+
+function arrayInitialValue(field) {
+  const dataValue = valueForPath(field.path);
+  if (Array.isArray(dataValue)) return dataValue;
+  if (Array.isArray(field.example)) return field.example;
+  if (Array.isArray(field.enum) && field.enum.length) return field.enum;
+  return [];
+}
+
+function renderPrimitive(field) {
+  const id = toFieldId(field.path);
+  const label = formatLabel(field.name || field.path.at(-1) || 'Field');
+  const value = primitiveInitialValue(field);
+  const pathKey = toPathKey(field.path);
+  const description = field.description ? `<p class="api-tryit__hint">${escapeHtml(field.description)}</p>` : '';
+  const requiredAttr = field.required ? ' required' : '';
+  const requiredBadge = field.required ? '<span class="api-tryit__required">*</span>' : '';
+
+  if (field.type === 'boolean') {
+    const options = field.required ? ['true', 'false'] : ['', 'true', 'false'];
+    const optionsHtml = options
+      .map((optionValue) => {
+        const isSelected = optionValue === value ? ' selected' : '';
+        const labelText = optionValue === '' ? '— Omit —' : optionValue === 'true' ? 'True' : 'False';
+        return `<option value="${escapeHtml(optionValue)}"${isSelected}>${escapeHtml(labelText)}</option>`;
+      })
+      .join('');
+    return `
+      <div class="api-tryit__field" data-schema-field>
+        <label class="api-tryit__label" for="${escapeHtml(id)}">
+          ${escapeHtml(label)}${requiredBadge}
+        </label>
+        <select
+          id="${escapeHtml(id)}"
+          class="api-tryit__input"
+          data-schema-input
+          data-schema-path="${escapeHtml(pathKey)}"
+          data-schema-type="${escapeHtml(field.type)}"${requiredAttr}
+        >${optionsHtml}</select>
+        ${description}
+      </div>
+    `;
+  }
+
+  if (Array.isArray(field.enum) && field.enum.length) {
+    const options = field.required ? field.enum : [''].concat(field.enum);
+    const optionsHtml = options
+      .map((optionValue) => {
+        const normalised = normaliseString(optionValue);
+        const isSelected = normalised === value ? ' selected' : '';
+        const display = normalised || '— Select —';
+        return `<option value="${escapeHtml(normalised)}"${isSelected}>${escapeHtml(display)}</option>`;
+      })
+      .join('');
+    return `
+      <div class="api-tryit__field" data-schema-field>
+        <label class="api-tryit__label" for="${escapeHtml(id)}">
+          ${escapeHtml(label)}${requiredBadge}
+        </label>
+        <select
+          id="${escapeHtml(id)}"
+          class="api-tryit__input"
+          data-schema-input
+          data-schema-path="${escapeHtml(pathKey)}"
+          data-schema-type="${escapeHtml(field.type)}"${requiredAttr}
+        >${optionsHtml}</select>
+        ${description}
+      </div>
+    `;
+  }
+
+  const inputType = field.type === 'integer' || field.type === 'number' ? 'number' : 'text';
+  const stepAttr = field.type === 'integer' ? ' step="1"' : '';
+  const placeholder = field.example ? ` placeholder="${escapeHtml(normaliseString(field.example))}"` : '';
+  const patternAttr = field.pattern ? ` pattern="${escapeHtml(field.pattern)}"` : '';
+  const minAttr = field.minimum !== undefined ? ` min="${escapeHtml(String(field.minimum))}"` : '';
+  const maxAttr = field.maximum !== undefined ? ` max="${escapeHtml(String(field.maximum))}"` : '';
+
+  return `
+    <div class="api-tryit__field" data-schema-field>
+      <label class="api-tryit__label" for="${escapeHtml(id)}">
+        ${escapeHtml(label)}${requiredBadge}
+      </label>
+      <input
+        id="${escapeHtml(id)}"
+        class="api-tryit__input"
+        type="${inputType}"${stepAttr}
+        value="${escapeHtml(value)}"${placeholder}
+        data-schema-input
+        data-schema-path="${escapeHtml(pathKey)}"
+        data-schema-type="${escapeHtml(field.type)}"${requiredAttr}${patternAttr}${minAttr}${maxAttr}
+      />
+      ${description}
+    </div>
+  `;
+}
+
+function renderArray(field) {
+  const id = toFieldId(field.path);
+  const label = formatLabel(field.name || field.path.at(-1) || 'Items');
+  const values = arrayInitialValue(field).map((item) => normaliseString(item)).join('\n');
+  const pathKey = toPathKey(field.path);
+  const requiredAttr = field.required ? ' required' : '';
+  const requiredBadge = field.required ? '<span class="api-tryit__required">*</span>' : '';
+  const description = field.description
+    ? escapeHtml(field.description)
+    : 'Enter one value per line. The payload will be serialised as an array.';
+  const itemType = field.itemType ? ` data-schema-item-type="${escapeHtml(field.itemType)}"` : '';
+  const placeholder = field.enum?.length
+    ? field.enum.map((item) => normaliseString(item)).join('\n')
+    : field.example && Array.isArray(field.example)
+      ? field.example.map((item) => normaliseString(item)).join('\n')
+      : '';
+  const placeholderAttr = placeholder ? ` placeholder="${escapeHtml(placeholder)}"` : '';
+
+  return `
+    <div class="api-tryit__field" data-schema-field>
+      <label class="api-tryit__label" for="${escapeHtml(id)}">
+        ${escapeHtml(label)}${requiredBadge}
+      </label>
+      <textarea
+        id="${escapeHtml(id)}"
+        class="api-tryit__input api-tryit__input--textarea"
+        rows="3"
+        data-schema-input
+        data-schema-path="${escapeHtml(pathKey)}"
+        data-schema-type="array"${itemType}${requiredAttr}${placeholderAttr}
+      >${escapeHtml(values)}</textarea>
+      <p class="api-tryit__hint">${description}</p>
+    </div>
+  `;
+}
+
+function renderUnsupported(field) {
+  const label = formatLabel(field.name || 'Field');
+  const message = field.message || 'Not supported in form mode. Use Raw JSON instead.';
+  return `
+    <div class="api-tryit__field api-tryit__field--unsupported">
+      <p class="api-tryit__hint api-tryit__hint--warning">
+        <strong>${escapeHtml(label)}:</strong> ${escapeHtml(message)}
+      </p>
+    </div>
+  `;
+}
+
+function renderField(field) {
+  if (!field) return '';
+  if (field.kind === 'object') {
+    const legend = formatLabel(field.name || field.path.at(-1) || 'Object');
+    const description = field.description ? `<p class="api-tryit__hint">${escapeHtml(field.description)}</p>` : '';
+    const children = Array.isArray(field.children) && field.children.length
+      ? field.children.map(renderField).join('')
+      : '<p class="api-tryit__hint">No documented properties for this object.</p>';
+    const pathKey = toPathKey(field.path);
+    const requiredBadge = field.required ? '<span class="api-tryit__required">*</span>' : '';
+    return `
+      <fieldset class="api-tryit__fieldset api-tryit__fieldset--schema" data-schema-object data-schema-path="${escapeHtml(pathKey)}">
+        <legend>${escapeHtml(legend)}${requiredBadge}</legend>
+        ${description}
+        ${children}
+      </fieldset>
+    `;
+  }
+  if (field.kind === 'primitive') return renderPrimitive(field);
+  if (field.kind === 'array') return renderArray(field);
+  if (field.kind === 'unsupported') return renderUnsupported(field);
+  return '';
+}
+
+const schemaHtml = Array.isArray(fields) && fields.length
+  ? fields.map((field) => renderField(field)).join('')
+  : '';
+---
+{schemaHtml
+  ? <div class="api-tryit__schema-fields" set:html={schemaHtml}></div>
+  : <p class="api-tryit__hint">This schema does not define any properties.</p>}
+*** End of File
