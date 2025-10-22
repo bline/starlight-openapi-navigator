@@ -1,0 +1,503 @@
+openapi: 3.1.0
+info:
+  title: Demo Todos API
+  version: 1.0.0
+  summary: A small REST API for todos
+  description: |
+    This is a moderately simple OpenAPI spec you can use to demo your Starlight OpenAPI Navigator plugin.
+    It defines a minimal **Todos** service with four endpoints and includes both standard OpenAPI examples
+    and `x-codeSamples` for multiple languages.
+servers:
+  - url: https://api.example.com/v1
+    description: Production
+  - url: http://localhost:8080/v1
+    description: Local development
+tags:
+  - name: Todos
+    description: Manage todo items
+security:
+  - ApiKeyAuth: []
+paths:
+  /todos:
+    get:
+      tags: [Todos]
+      summary: List todos
+      description: |
+        Returns a paginated list of todos. Use query parameters to filter or sort results.
+      parameters:
+        - name: limit
+          in: query
+          description: Max number of items to return (1–100).
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          example: 10
+        - name: offset
+          in: query
+          description: Number of items to skip before starting to collect the result set.
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          example: 0
+        - name: completed
+          in: query
+          description: Filter by completion status.
+          required: false
+          schema:
+            type: boolean
+          example: false
+      responses:
+        '200':
+          description: A page of todos.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Todo'
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+                required: [items, total, limit, offset]
+              examples:
+                default:
+                  summary: Basic page
+                  description: A simple page of todos with two items.
+                  value:
+                    items:
+                      - id: "td_001"
+                        title: "Write docs"
+                        completed: false
+                        dueAt: "2025-10-31T17:00:00Z"
+                      - id: "td_002"
+                        title: "Ship demo"
+                        completed: true
+                        dueAt: null
+                    total: 2
+                    limit: 20
+                    offset: 0
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+      x-codeSamples:
+        - lang: curl
+          label: cURL
+          source: |
+            curl -H "x-api-key: $API_KEY" "https://api.example.com/v1/todos?limit=10&completed=false"
+        - lang: JavaScript
+          label: fetch
+          source: |
+            const res = await fetch("https://api.example.com/v1/todos?limit=10", {
+              headers: { "x-api-key": process.env.API_KEY }
+            });
+            const data = await res.json();
+            console.log(data);
+        - lang: Python
+          label: requests
+          source: |
+            import os, requests
+            r = requests.get("https://api.example.com/v1/todos", headers={"x-api-key": os.environ["API_KEY"]})
+            print(r.json())
+    post:
+      tags: [Todos]
+      summary: Create todo
+      description: |
+        Creates a new todo item.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewTodo'
+            examples:
+              basic:
+                summary: Minimal create
+                description: Create a simple todo with just a title.
+                value:
+                  title: "Try the plugin"
+              withDueDate:
+                summary: With due date
+                description: Create a todo that includes a specific due date.
+                value:
+                  title: "Write release notes"
+                  dueAt: "2025-11-01T12:00:00Z"
+      responses:
+        '201':
+          description: Created
+          headers:
+            Location:
+              description: URL of the created resource
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Todo'
+              examples:
+                created:
+                  summary: Created todo
+                  description: The API returns the created todo.
+                  value:
+                    id: "td_101"
+                    title: "Try the plugin"
+                    completed: false
+                    dueAt: null
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+      x-codeSamples:
+        - lang: curl
+          label: cURL
+          source: |
+            curl -X POST "https://api.example.com/v1/todos"               -H "content-type: application/json"               -H "x-api-key: $API_KEY"               -d '{"title":"Try the plugin"}'
+        - lang: JavaScript
+          label: fetch
+          source: |
+            await fetch("https://api.example.com/v1/todos", {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-api-key": process.env.API_KEY
+              },
+              body: JSON.stringify({ title: "Try the plugin" })
+            });
+        - lang: Python
+          label: requests
+          source: |
+            import os, requests
+            r = requests.post(
+              "https://api.example.com/v1/todos",
+              headers={"x-api-key": os.environ["API_KEY"]},
+              json={"title": "Try the plugin"}
+            )
+            print(r.json())
+  /todos/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The todo identifier.
+        schema:
+          type: string
+          pattern: '^td_[A-Za-z0-9]+$'
+        example: td_001
+    get:
+      tags: [Todos]
+      summary: Get todo
+      description: |
+        Fetch a single todo by its identifier.
+      responses:
+        '200':
+          description: A single todo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Todo'
+              examples:
+                example:
+                  summary: Found todo
+                  description: A typical todo payload.
+                  value:
+                    id: "td_001"
+                    title: "Write docs"
+                    completed: false
+                    dueAt: "2025-10-31T17:00:00Z"
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-codeSamples:
+        - lang: curl
+          label: cURL
+          source: |
+            curl -H "x-api-key: $API_KEY" "https://api.example.com/v1/todos/td_001"
+        - lang: JavaScript
+          label: fetch
+          source: |
+            const res = await fetch("https://api.example.com/v1/todos/td_001", {
+              headers: { "x-api-key": process.env.API_KEY }
+            });
+            console.log(await res.json());
+        - lang: Python
+          label: requests
+          source: |
+            import os, requests
+            r = requests.get(
+              "https://api.example.com/v1/todos/td_001",
+              headers={"x-api-key": os.environ["API_KEY"]}
+            )
+            print(r.json())
+    patch:
+      tags: [Todos]
+      summary: Update todo
+      description: |
+        Apply a partial update to a todo. Only the provided fields will be changed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTodo'
+            examples:
+              markDone:
+                summary: Mark as done
+                description: Toggle completion to true.
+                value:
+                  completed: true
+              retitle:
+                summary: Change title
+                description: Update the title text.
+                value:
+                  title: "Ship a cool demo"
+      responses:
+        '200':
+          description: The updated todo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Todo'
+              examples:
+                updated:
+                  summary: Updated todo
+                  description: Example response after changing the title.
+                  value:
+                    id: "td_001"
+                    title: "Ship a cool demo"
+                    completed: false
+                    dueAt: "2025-10-31T17:00:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-codeSamples:
+        - lang: curl
+          label: cURL
+          source: |
+            curl -X PATCH "https://api.example.com/v1/todos/td_001"               -H "content-type: application/json"               -H "x-api-key: $API_KEY"               -d '{"completed": true}'
+        - lang: JavaScript
+          label: fetch
+          source: |
+            await fetch("https://api.example.com/v1/todos/td_001", {
+              method: "PATCH",
+              headers: {
+                "content-type": "application/json",
+                "x-api-key": process.env.API_KEY
+              },
+              body: JSON.stringify({ completed: true })
+            });
+        - lang: Python
+          label: requests
+          source: |
+            import os, requests
+            r = requests.patch(
+              "https://api.example.com/v1/todos/td_001",
+              headers={"x-api-key": os.environ["API_KEY"]},
+              json={"completed": True}
+            )
+            print(r.json())
+  /todos/{id}/completion:
+    post:
+      tags: [Todos]
+      summary: Toggle completion
+      description: |
+        Convenience endpoint to set a todo's completion state explicitly.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The todo identifier.
+          schema:
+            type: string
+          example: td_001
+        - name: completed
+          in: query
+          required: true
+          description: Desired completion state.
+          schema:
+            type: boolean
+          example: true
+      responses:
+        '200':
+          description: Updated todo with the requested completion state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Todo'
+              examples:
+                done:
+                  summary: Marked complete
+                  description: Example response when completion becomes true.
+                  value:
+                    id: "td_001"
+                    title: "Write docs"
+                    completed: true
+                    dueAt: "2025-10-31T17:00:00Z"
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-codeSamples:
+        - lang: curl
+          label: cURL
+          source: |
+            curl -X POST "https://api.example.com/v1/todos/td_001/completion?completed=true"               -H "x-api-key: $API_KEY"
+        - lang: JavaScript
+          label: fetch
+          source: |
+            await fetch("https://api.example.com/v1/todos/td_001/completion?completed=true", {
+              method: "POST",
+              headers: { "x-api-key": process.env.API_KEY }
+            });
+        - lang: Python
+          label: requests
+          source: |
+            import os, requests
+            r = requests.post(
+              "https://api.example.com/v1/todos/td_001/completion",
+              headers={"x-api-key": os.environ["API_KEY"]},
+              params={"completed": True}
+            )
+            print(r.json())
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+  responses:
+    UnauthorizedError:
+      description: Missing or invalid API key.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            unauthorized:
+              summary: Not authorized
+              description: The provided API key is missing or invalid.
+              value:
+                error: "unauthorized"
+                message: "Missing or invalid API key."
+    NotFound:
+      description: The requested resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            notFound:
+              summary: Not found
+              description: No resource exists with that identifier.
+              value:
+                error: "not_found"
+                message: "No todo with id td_999"
+    BadRequest:
+      description: The request is malformed or fails validation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            validation:
+              summary: Validation error
+              description: The payload did not pass validation.
+              value:
+                error: "bad_request"
+                message: "title must be a non-empty string"
+  schemas:
+    Todo:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the todo.
+          example: td_001
+        title:
+          type: string
+          description: Short, actionable text.
+          example: "Write docs"
+        completed:
+          type: boolean
+          description: Whether the todo is complete.
+          example: false
+        dueAt:
+          type: [string, 'null']
+          format: date-time
+          description: Optional due date in RFC 3339 format.
+          example: "2025-10-31T17:00:00Z"
+      required: [id, title, completed, dueAt]
+      description: A single todo item.
+    NewTodo:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          description: The title for the new todo.
+        dueAt:
+          type: [string, 'null']
+          format: date-time
+          description: Optional due date.
+      required: [title]
+      examples:
+        minimal:
+          summary: Minimal
+          description: Only the title is required.
+          value:
+            title: "Try the plugin"
+        full:
+          summary: With due date
+          description: Provide a due date to schedule the item.
+          value:
+            title: "Write release notes"
+            dueAt: "2025-11-01T12:00:00Z"
+    UpdateTodo:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          description: New title for the todo.
+        completed:
+          type: boolean
+          description: New completion status.
+        dueAt:
+          type: [string, 'null']
+          format: date-time
+          description: New due date or null to clear it.
+      additionalProperties: false
+      description: A patch object with any subset of updatable fields.
+      examples:
+        retitle:
+          summary: Change title
+          description: Update just the title field.
+          value:
+            title: "Ship a cool demo"
+        markDone:
+          summary: Mark done
+          description: Set completed to true.
+          value:
+            completed: true
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code.
+        message:
+          type: string
+          description: Human-readable message.
+      required: [error, message]
