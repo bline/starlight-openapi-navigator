@@ -1,0 +1,199 @@
+---
+import { Icon } from '@astrojs/starlight/components';
+import AnchorHeading from '@astrojs/starlight/components/AnchorHeading.astro';
+
+import SchemaPicker from './OpenApiSchemaPicker.astro';
+import SchemaNode from './OpenApiSchemaNode.astro';
+
+const {
+  schemaData = null,
+  schemas = [],
+  currentSlug = null,
+  baseSlug = 'api',
+} = Astro.props;
+
+const schemaName = schemaData?.name || currentSlug || 'Schema';
+const schemaSlug = schemaData?.slug || currentSlug || 'schema';
+const schemaDescription = schemaData?.description || '';
+const normalizedSchema = schemaData?.schema && typeof schemaData.schema === 'object'
+  ? schemaData.schema
+  : null;
+
+const slugMap = new Map(
+  Array.isArray(schemas)
+    ? schemas
+        .filter((entry) => entry && typeof entry.name === 'string' && typeof entry.slug === 'string')
+        .map((entry) => [entry.name, entry.slug])
+    : []
+);
+slugMap.set(schemaSlug, schemaSlug);
+slugMap.set(schemaName, schemaSlug);
+---
+
+<div class="schema-page sl-markdown-content">
+  <section class="schema-page__picker">
+    <SchemaPicker
+      schemas={schemas}
+      currentSlug={schemaSlug}
+      size="compact"
+      label="Browse schemas"
+    />
+  </section>
+
+  <section id={schemaSlug} class="schema-page__content">
+    <AnchorHeading level="2" id={schemaSlug} class="schema-page__heading">
+      {schemaName}
+    </AnchorHeading>
+
+{schemaDescription && <p>{schemaDescription}</p>}
+
+{normalizedSchema ? (
+  <div class="schema-page__tree" data-schema-tree>
+    <div class="schema-page__toolbar">
+      <button
+        type="button"
+        class="schema-page__toggle"
+        data-schema-toggle
+        aria-pressed="false"
+      >
+        <Icon name="right-caret" size="1rem" aria-hidden="true" data-schema-toggle-icon />
+        <span data-schema-toggle-label>Expand All</span>
+      </button>
+    </div>
+    <ul class="schema-tree">
+      <SchemaNode name={null} schema={normalizedSchema} depth={0} slugMap={slugMap} />
+    </ul>
+  </div>
+) : (
+  <p class="schema-page__empty">This schema does not contain any structured fields.</p>
+)}
+</section>
+</div>
+
+<style scoped>
+.schema-page {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.schema-page__picker {
+  margin: 0;
+}
+
+.schema-page__content {
+  margin: 0;
+}
+
+.schema-page__heading {
+  margin-bottom: 1rem;
+}
+
+.schema-page__tree {
+  border: 1px solid var(--color-border, #2f353d);
+  border-radius: 0.75rem;
+  padding: 1rem 1.25rem;
+  background: var(--color-bg-muted, color-mix(in srgb, var(--color-bg, #0f1115) 90%, #ffffff 10%));
+}
+
+.schema-page__toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.75rem;
+}
+
+.schema-page__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--color-border, #2f353d);
+  background: var(--color-bg, #0f1115);
+  color: inherit;
+  border-radius: 0.5rem;
+  padding: 0.4rem 0.65rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.schema-page__toggle:hover {
+  border-color: color-mix(in srgb, var(--color-primary, #4c82fb) 40%, transparent);
+  background: color-mix(in srgb, var(--color-primary, #4c82fb) 12%, transparent);
+}
+
+.schema-page__toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary, #4c82fb) 60%, transparent);
+  outline-offset: 2px;
+}
+
+.schema-page__empty {
+  margin: 0;
+  font-style: italic;
+  color: var(--color-muted-fg, color-mix(in srgb, currentColor 60%, transparent));
+}
+</style>
+
+<script is:inline>
+  (() => {
+    const wrapper = document.currentScript?.previousElementSibling;
+    if (!(wrapper instanceof HTMLElement)) return;
+    const toggle = wrapper.querySelector('[data-schema-toggle]');
+    const tree = wrapper.querySelector('[data-schema-tree]');
+    if (!(toggle instanceof HTMLButtonElement) || !(tree instanceof HTMLElement)) {
+      return;
+    }
+
+    const icon = toggle.querySelector('[data-schema-toggle-icon]');
+    const label = toggle.querySelector('[data-schema-toggle-label]');
+
+    const getDetails = () => Array.from(tree.querySelectorAll('details.schema-node__details'));
+
+    const setState = (expanded) => {
+      toggle.dataset.state = expanded ? 'expanded' : 'collapsed';
+      toggle.setAttribute('aria-pressed', expanded ? 'true' : 'false');
+      if (label instanceof HTMLElement) {
+        label.textContent = expanded ? 'Collapse All' : 'Expand All';
+      }
+      if (icon instanceof HTMLElement) {
+        icon.setAttribute('name', expanded ? 'down-caret' : 'right-caret');
+      }
+    };
+
+    const computeExpanded = () => {
+      const details = getDetails();
+      if (details.length === 0) return false;
+      return details.every((node) => node.open);
+    };
+
+    const handleToggle = () => {
+      const shouldExpand = toggle.dataset.state !== 'expanded';
+      const details = getDetails();
+      details.forEach((node) => {
+        node.open = shouldExpand;
+      });
+      setState(shouldExpand);
+    };
+
+    toggle.addEventListener('click', (event) => {
+      event.preventDefault();
+      handleToggle();
+    });
+
+    tree.addEventListener(
+      'toggle',
+      (event) => {
+        if (event.target instanceof HTMLElement && event.target.matches('details.schema-node__details')) {
+          setState(computeExpanded());
+        }
+      },
+      true
+    );
+
+    const details = getDetails();
+    if (details.length === 0) {
+      toggle.hidden = true;
+    } else {
+      setState(computeExpanded());
+    }
+  })();
+</script>

@@ -1,0 +1,191 @@
+---
+const {
+  schemas = [],
+  currentSlug = null,
+  label = 'Schemas',
+  placeholder = 'Search schemas',
+  size = 'wide',
+} = Astro.props;
+
+const normalized = Array.isArray(schemas)
+  ? schemas.filter((schema) => schema && typeof schema.slug === 'string' && typeof schema.name === 'string')
+  : [];
+
+const inputId = `schema-picker-${Math.random().toString(36).slice(2, 10)}`;
+const listId = `${inputId}-list`;
+---
+
+<div class={`schema-picker schema-picker--${size}`} data-schema-picker>
+  <label class="schema-picker__label" for={inputId}>{label}</label>
+  <div class="schema-picker__input-row">
+    <input
+      id={inputId}
+      class="schema-picker__input"
+      type="search"
+      placeholder={placeholder}
+      data-schema-picker-input
+      aria-controls={listId}
+      autocomplete="off"
+      spellcheck="false"
+    />
+  </div>
+  <div
+    class="schema-picker__list"
+    role="listbox"
+    id={listId}
+    data-schema-picker-list
+    aria-live="polite"
+  >
+    {normalized.length === 0 ? (
+      <p class="schema-picker__empty">No schemas available.</p>
+    ) : (
+      normalized.map((schema) => (
+        <a
+          class={`schema-picker__option${schema.slug === currentSlug ? ' is-active' : ''}`}
+          href={schema.href}
+          role="option"
+          data-schema-search={`${schema.name} ${schema.slug}`.toLowerCase()}
+        >
+          <span class="schema-picker__name">{schema.name}</span>
+        </a>
+      ))
+    )}
+  </div>
+  <p class="schema-picker__no-results" data-schema-picker-empty hidden>No matching schemas.</p>
+</div>
+
+<script is:inline>
+  (() => {
+    const container = document.currentScript?.previousElementSibling;
+    if (!(container instanceof HTMLElement)) return;
+    const input = container.querySelector('[data-schema-picker-input]');
+    const list = container.querySelector('[data-schema-picker-list]');
+    const emptyHint = container.querySelector('[data-schema-picker-empty]');
+    if (!(input instanceof HTMLInputElement) || !(list instanceof HTMLElement)) return;
+
+    /** @type {Array<{ element: HTMLElement, name: string }>} */
+    const options = Array.from(list.querySelectorAll('[data-schema-search]'))
+      .filter((node) => node instanceof HTMLElement)
+      .map((element) => ({
+        element,
+        searchText: (element.dataset.schemaSearch || '').toLowerCase(),
+      }));
+
+    const filterOptions = (term) => {
+      if (!options.length) return;
+      const query = term.trim().toLowerCase();
+      let visible = 0;
+      if (!query) {
+        options.forEach(({ element }) => {
+          element.hidden = false;
+        });
+        visible = options.length;
+      } else {
+        const tokens = query.split(/\s+/).filter(Boolean);
+        options.forEach(({ element, searchText }) => {
+          const matches = tokens.every((token) => searchText.includes(token));
+          element.hidden = !matches;
+          if (matches) visible += 1;
+        });
+      }
+      if (emptyHint instanceof HTMLElement) {
+        emptyHint.hidden = visible > 0;
+      }
+    };
+
+    const handleFilter = () => filterOptions(input.value);
+
+    input.addEventListener('input', handleFilter);
+    input.addEventListener('keyup', handleFilter);
+
+    // Initial render (in case we hydrate on a page with preset text).
+    filterOptions(input.value);
+  })();
+</script>
+
+<style scoped>
+.schema-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.schema-picker__label {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.schema-picker__input-row {
+  display: flex;
+  align-items: center;
+}
+
+.schema-picker__input {
+  flex: 1;
+  border: 1px solid var(--color-border, #2f353d);
+  border-radius: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  font: inherit;
+  background: var(--color-bg, #0f1115);
+  color: inherit;
+}
+
+.schema-picker__input:focus {
+  outline: 2px solid color-mix(in srgb, var(--color-primary, #4c82fb) 60%, transparent);
+  outline-offset: 1px;
+}
+
+.schema-picker__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 18rem;
+  overflow-y: auto;
+  border: 1px solid var(--color-border, #2f353d);
+  border-radius: 0.6rem;
+  padding: 0.5rem;
+  background: var(--color-bg-muted, color-mix(in srgb, var(--color-bg, #0f1115) 90%, #ffffff 10%));
+}
+
+.schema-picker--compact .schema-picker__list {
+  max-height: 12rem;
+}
+
+.schema-picker__option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.5rem;
+  text-decoration: none;
+  color: inherit;
+  border: 1px solid transparent;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.schema-picker__option:hover {
+  border-color: color-mix(in srgb, var(--color-primary, #4c82fb) 35%, transparent);
+  background: color-mix(in srgb, var(--color-primary, #4c82fb) 12%, transparent);
+}
+
+.schema-picker__option.is-active {
+  border-color: var(--color-primary, #4c82fb);
+  background: color-mix(in srgb, var(--color-primary, #4c82fb) 16%, transparent);
+}
+
+.schema-picker__option[hidden] {
+  display: none;
+}
+
+.schema-picker__name {
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+.schema-picker__empty,
+.schema-picker__no-results {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--color-muted-fg, color-mix(in srgb, currentColor 60%, transparent));
+}
+</style>

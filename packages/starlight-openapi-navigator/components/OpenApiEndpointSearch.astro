@@ -1,0 +1,366 @@
+---
+const {
+  operations = [],
+  inputId = 'endpoint-search',
+  label = 'Find an endpoint',
+  placeholder = 'Search by path, summary, or tag',
+  helperText = '',
+  maxResults = 12,
+} = Astro.props;
+
+const sanitizedOperations = Array.isArray(operations)
+  ? operations
+      .filter((operation) => operation && typeof operation.href === 'string')
+      .map((operation) => ({
+        id: operation.id,
+        href: operation.href,
+        method: typeof operation.method === 'string' ? operation.method : '',
+        path: typeof operation.path === 'string' ? operation.path : '',
+        summary: typeof operation.summary === 'string' ? operation.summary : '',
+        tagName: typeof operation.tagName === 'string' ? operation.tagName : '',
+        deprecated: Boolean(operation.deprecated),
+      }))
+  : [];
+
+const datasetId = `${inputId}-dataset`;
+const resultsId = `${inputId}-results`;
+
+const serializeForScript = (value) => {
+  try {
+    return JSON.stringify(value).replace(/</g, '\\u003C');
+  } catch {
+    return '[]';
+  }
+};
+
+const datasetIdLiteral = JSON.stringify(datasetId);
+const inputIdLiteral = JSON.stringify(inputId);
+const resultsIdLiteral = JSON.stringify(resultsId);
+const maxResultsLiteral = Number.isFinite(Number(maxResults)) ? Number(maxResults) : 12;
+---
+
+<div class="endpoint-search" data-endpoint-search-root>
+  <label class="endpoint-search__label" for={inputId}>{label}</label>
+  <div class="endpoint-search__input">
+    <input
+      id={inputId}
+      type="search"
+      class="endpoint-search__field"
+      placeholder={placeholder}
+      autocomplete="off"
+      aria-autocomplete="list"
+      aria-controls={resultsId}
+      aria-expanded="false"
+    />
+    <ul id={resultsId} class="endpoint-search__results" role="listbox" hidden></ul>
+  </div>
+  {helperText && <p class="endpoint-search__hint">{helperText}</p>}
+  <script
+    type="application/json"
+    id={datasetId}
+    data-endpoint-search-dataset
+    set:html={serializeForScript(sanitizedOperations)}
+  ></script>
+  <script type="module">
+    const MAX_RESULTS = {maxResultsLiteral};
+    const datasetEl = document.getElementById({datasetIdLiteral});
+    const input = document.getElementById({inputIdLiteral});
+    const resultsList = document.getElementById({resultsIdLiteral});
+    if (!datasetEl || !input || !resultsList) {
+      console.warn('starlight-openapi-navigator: endpoint search markup missing expected elements.');
+    } else {
+      let matches = [];
+      let activeIndex = -1;
+      let operations = [];
+
+      try {
+        const parsed = JSON.parse(datasetEl.textContent || '[]');
+        if (Array.isArray(parsed)) {
+          operations = parsed.filter((entry) => entry && typeof entry.href === 'string');
+        }
+      } catch (error) {
+        console.error('starlight-openapi-navigator: failed to parse endpoint dataset.', error);
+      }
+
+      const normalize = (value) => value.toLowerCase().replace(/\s+/g, ' ').trim();
+      const buildHaystack = (operation) =>
+        normalize(
+          [operation.method, operation.path, operation.summary, operation.tagName]
+            .filter(Boolean)
+            .join(' ')
+        );
+
+      const indexedOperations = operations.map((operation) => ({
+        ...operation,
+        haystack: buildHaystack(operation),
+      }));
+
+      const renderMatches = () => {
+        resultsList.innerHTML = '';
+        if (!matches.length) {
+          resultsList.hidden = true;
+          input.setAttribute('aria-expanded', 'false');
+          return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        matches.slice(0, MAX_RESULTS).forEach((operation, index) => {
+          const item = document.createElement('li');
+          item.role = 'option';
+          item.dataset.index = String(index);
+          item.className = 'endpoint-search__result';
+
+          const link = document.createElement('a');
+          link.href = operation.href;
+          link.className = 'endpoint-search__result-link';
+
+          const method = document.createElement('span');
+          method.className = `endpoint-search__method endpoint-search__method--${operation.method.toLowerCase()}`;
+          method.textContent = operation.method;
+          link.append(method);
+
+          const path = document.createElement('code');
+          path.className = 'endpoint-search__path';
+          path.textContent = operation.path;
+          link.append(path);
+
+          if (operation.summary) {
+            const summary = document.createElement('span');
+            summary.className = 'endpoint-search__summary';
+            summary.textContent = operation.summary;
+            link.append(summary);
+          }
+
+          if (operation.tagName) {
+            const tag = document.createElement('span');
+            tag.className = 'endpoint-search__tag';
+            tag.textContent = operation.tagName;
+            link.append(tag);
+          }
+
+          if (operation.deprecated) {
+            const badge = document.createElement('span');
+            badge.className = 'endpoint-search__deprecated';
+            badge.textContent = 'Deprecated';
+            link.append(badge);
+          }
+
+          item.append(link);
+          fragment.append(item);
+        });
+
+        resultsList.append(fragment);
+        resultsList.hidden = false;
+        input.setAttribute('aria-expanded', 'true');
+        updateActive(0);
+      };
+
+      const updateActive = (nextIndex) => {
+        const items = Array.from(resultsList.children);
+        items.forEach((item) => item.classList.remove('endpoint-search__result--active'));
+        if (!items.length) {
+          activeIndex = -1;
+          return;
+        }
+        if (nextIndex < 0) nextIndex = items.length - 1;
+        if (nextIndex >= items.length) nextIndex = 0;
+        activeIndex = nextIndex;
+        const activeItem = items[activeIndex];
+        activeItem.classList.add('endpoint-search__result--active');
+        activeItem.scrollIntoView({ block: 'nearest' });
+      };
+
+      const clearResults = () => {
+        matches = [];
+        resultsList.innerHTML = '';
+        resultsList.hidden = true;
+        input.setAttribute('aria-expanded', 'false');
+        activeIndex = -1;
+      };
+
+      const applyQuery = () => {
+        const value = normalize(input.value);
+        if (!value) {
+          clearResults();
+          return;
+        }
+        const terms = value.split(' ').filter(Boolean);
+        if (!terms.length) {
+          clearResults();
+          return;
+        }
+        matches = indexedOperations.filter((operation) =>
+          terms.every((term) => operation.haystack.includes(term))
+        );
+        if (!matches.length) {
+          clearResults();
+          return;
+        }
+        renderMatches();
+      };
+
+      const navigateToActive = () => {
+        const activeItem = resultsList.children[activeIndex];
+        if (!activeItem) return;
+        const link = activeItem.querySelector('a');
+        if (link) {
+          window.location.assign(link.href);
+        }
+      };
+
+      input.addEventListener('input', () => {
+        applyQuery();
+      });
+
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          updateActive(activeIndex + 1);
+        } else if (event.key === 'ArrowUp') {
+          event.preventDefault();
+          updateActive(activeIndex - 1);
+        } else if (event.key === 'Enter') {
+          if (activeIndex >= 0) {
+            event.preventDefault();
+            navigateToActive();
+          }
+        } else if (event.key === 'Escape') {
+          clearResults();
+          input.value = '';
+        }
+      });
+
+      resultsList.addEventListener('mousedown', (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const link = target.closest('a');
+        if (link) {
+          event.preventDefault();
+          window.location.assign(link.href);
+        }
+      });
+
+      document.addEventListener('click', (event) => {
+        if (!resultsList.hidden) {
+          const target = event.target;
+          if (target instanceof Node && !resultsList.contains(target) && target !== input) {
+            clearResults();
+          }
+        }
+      });
+
+      if (typeof window !== 'undefined') {
+        window.addEventListener('pageshow', () => clearResults());
+      }
+    }
+  </script>
+</div>
+
+<style scoped>
+.endpoint-search {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  position: relative;
+}
+
+.endpoint-search__label {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.endpoint-search__input {
+  position: relative;
+}
+
+.endpoint-search__field {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  background: var(--color-bg);
+  font-size: 0.95rem;
+}
+
+.endpoint-search__field:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.endpoint-search__results {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0;
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  background: var(--color-bg);
+  max-height: 22rem;
+  overflow: auto;
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.endpoint-search__result {
+  display: block;
+}
+
+.endpoint-search__result--active,
+.endpoint-search__result:hover {
+  background: var(--color-bg-subtle);
+}
+
+.endpoint-search__result-link {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.75rem 1rem;
+  text-decoration: none;
+  color: inherit;
+}
+
+.endpoint-search__method {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.35rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: var(--color-accent);
+  color: var(--color-on-accent, #fff);
+  width: fit-content;
+  text-transform: uppercase;
+}
+
+.endpoint-search__method--get { background: var(--color-green, #2f9e44); color: #fff; }
+.endpoint-search__method--post { background: var(--color-blue, #1c7ed6); color: #fff; }
+.endpoint-search__method--delete { background: var(--color-red, #e03131); color: #fff; }
+.endpoint-search__method--put { background: var(--color-yellow, #e67700); color: #fff; }
+.endpoint-search__method--patch { background: var(--color-teal, #099268); color: #fff; }
+
+.endpoint-search__path {
+  font-size: 0.95rem;
+}
+
+.endpoint-search__summary {
+  font-size: 0.85rem;
+  color: var(--color-muted-fg);
+}
+
+.endpoint-search__tag {
+  font-size: 0.75rem;
+  color: var(--color-muted-fg);
+}
+
+.endpoint-search__deprecated {
+  font-size: 0.75rem;
+  color: var(--color-red, #e03131);
+  font-weight: 600;
+}
+
+.endpoint-search__hint {
+  font-size: 0.85rem;
+  color: var(--color-muted-fg);
+}
+</style>

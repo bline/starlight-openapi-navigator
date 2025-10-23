@@ -1,0 +1,55 @@
+---
+import SchemaPicker from './OpenApiSchemaPicker.astro';
+
+const {
+  schemas = [],
+  baseSlug = 'api',
+} = Astro.props;
+
+const schemaCount = Array.isArray(schemas) ? schemas.length : 0;
+---
+
+<div class="schema-index sl-markdown-content">
+  <section id="schema-picker" class="schema-index__panel">
+    <h2>Schema directory</h2>
+    <p class="schema-index__summary">
+      {schemaCount === 0
+        ? 'No reusable schemas were found in this specification.'
+        : `Browse ${schemaCount} reusable schema${schemaCount === 1 ? '' : 's'} from the OpenAPI document.`}
+    </p>
+    <SchemaPicker schemas={schemas} size="wide" />
+  </section>
+  <section class="schema-index__help">
+    <h3>How to use</h3>
+    <p>Filter schemas using the search box above, then select any entry to open its dedicated reference page.</p>
+  </section>
+</div>
+
+<style scoped>
+.schema-index {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.schema-index__panel {
+  margin: 0;
+}
+
+.schema-index__summary {
+  margin: 0 0 1rem;
+  font-size: 0.95rem;
+  color: var(--color-muted-fg, color-mix(in srgb, currentColor 60%, transparent));
+}
+
+.schema-index__help {
+  border: 1px solid var(--color-border, #2f353d);
+  border-radius: 0.75rem;
+  padding: 1rem 1.25rem;
+  background: var(--color-bg-muted, color-mix(in srgb, var(--color-bg, #0f1115) 90%, #ffffff 10%));
+}
+
+.schema-index__help h3 {
+  margin-top: 0;
+}
+</style>
