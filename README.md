@@ -34,7 +34,7 @@ Starlight OpenAPI Navigator is a first-class Astro/Starlight integration that tu
    ```bash
    pnpm add -D starlight-openapi-navigator
    ```
-2. Add the integration to `starlight.config.mjs` (or `.ts`):
+2. Register the plugin inside Starlight’s `plugins` array (e.g. `starlight.config.mjs`):
    ```js
    import { defineConfig } from 'astro/config';
    import starlight from '@astrojs/starlight';
@@ -45,25 +45,31 @@ Starlight OpenAPI Navigator is a first-class Astro/Starlight integration that tu
        starlight({
          title: 'Docs',
          // ...any other Starlight config
-       }),
-       starlightOpenApiNavigator({
-         specPath: 'public/openapi.yaml',
-         baseSlug: 'api',
-         navigation: {
-           enabled: true,
-           groupLabel: 'API Explorer',
-         },
+         plugins: [
+           starlightOpenApiNavigator({
+             specPath: 'public/openapi.yaml',
+             baseSlug: 'api',
+             navigation: {
+               enabled: true,
+               groupLabel: 'API Explorer',
+             },
+           }),
+         ],
        }),
      ],
    });
    ```
-3. Place your OpenAPI document at `public/openapi.yaml` (or adjust `specPath`).
+3. Place your OpenAPI document at `public/openapi.yaml` (or point `specPath` at an `https://…/openapi.yaml` URL—remote specs are fetched on demand and aren’t file-watched).
 4. Run the Starlight dev server and explore `/api/…` routes:
    ```bash
    pnpm astro dev
    ```
 
 During `astro dev`, the spec file is watched for changes and the docs are regenerated automatically.
+
+## Remote Spec URLs
+
+Navigator can bootstrap from any publicly reachable `http://` or `https://` OpenAPI document. Set `specPath` to the remote URL and the integration will fetch it at dev/build startup before generating pages. Because there’s no local file to watch, spec hot-reload is unavailable—reload the dev server (or restart the build) after remote changes.
 
 ## Generated Pages
 
@@ -90,58 +96,63 @@ For production builds the proxy is omitted; the generated pages stay 100% static
 ## Configuration Reference
 
 ```ts
-starlightOpenApiNavigator({
-  specPath: 'public/openapi.yaml',
-  watchSpec: true,
-  baseSlug: 'api',
-  outputDir: 'src/pages/api',
-  tags: {
-    include: ['payments'],
-    exclude: ['internal'],
-    order: ['core', 'payments'],
-    overrides: {
-      payments: {
-        label: 'Payments',
-        sidebarLabel: 'Payments API',
-        description: 'Public payment operations',
+starlight({
+  // ...other Starlight options
+  plugins: [
+    starlightOpenApiNavigator({
+      specPath: 'public/openapi.yaml',
+      watchSpec: true,
+      baseSlug: 'api',
+      outputDir: 'src/pages/api',
+      tags: {
+        include: ['payments'],
+        exclude: ['internal'],
+        order: ['core', 'payments'],
+        overrides: {
+          payments: {
+            label: 'Payments',
+            sidebarLabel: 'Payments API',
+            description: 'Public payment operations',
+          },
+        },
       },
-    },
-  },
-  codeSamples: {
-    includeLanguages: ['javascript', 'python'],
-    rename: {
-      javascript: 'Node.js',
-      python: 'Python 3',
-    },
-  },
-  navigation: {
-    enabled: true,
-    groupLabel: 'API Explorer',
-    replaceGroupLabel: 'API Explorer',
-    insertPosition: 'append', // or 'prepend'
-    insertBefore: undefined,  // label of another sidebar group
-    insertAfter: undefined,   // label of another sidebar group
-    tagSort: 'spec',          // or 'alpha'
-    operationSort: 'spec',    // or 'alpha'
-    operationLabel: 'summary',// or 'path'
-    operationTitle: 'path',   // or 'summary'
-    overviewItem: {
-      label: 'Overview',
-      link: '/api/',
-      badge: { text: 'New', variant: 'note' },
-    },
-    schemasItem: {
-      label: 'Schemas',
-      link: '/api/schemas/',
-    },
-  },
+      codeSamples: {
+        includeLanguages: ['javascript', 'python'],
+        rename: {
+          javascript: 'Node.js',
+          python: 'Python 3',
+        },
+      },
+      navigation: {
+        enabled: true,
+        groupLabel: 'API Explorer',
+        replaceGroupLabel: 'API Explorer',
+        insertPosition: 'append', // or 'prepend'
+        insertBefore: undefined,  // label of another sidebar group
+        insertAfter: undefined,   // label of another sidebar group
+        tagSort: 'spec',          // or 'alpha'
+        operationSort: 'spec',    // or 'alpha'
+        operationLabel: 'summary',// or 'path'
+        operationTitle: 'path',   // or 'summary'
+        overviewItem: {
+          label: 'Overview',
+          link: '/api/',
+          badge: { text: 'New', variant: 'note' },
+        },
+        schemasItem: {
+          label: 'Schemas',
+          link: '/api/schemas/',
+        },
+      },
+    }),
+  ],
 });
 ```
 
 Key behaviors:
 
-- `specPath` accepts absolute or relative paths; relative paths are resolved from `process.cwd()`.
-- `watchSpec` regenerates docs on spec changes during dev.
+- `specPath` accepts absolute/relative filesystem paths or `http(s)` URLs; remote specs are fetched at startup and aren’t file-watched.
+- `watchSpec` regenerates docs on spec changes during dev for local files.
 - `baseSlug` controls the route prefix (`/api/...`) and `outputDir` can redirect the generated files elsewhere.
 - `tags.include/exclude/order` filter and prioritize tag groups; `tags.overrides` can rename labels/descriptions.
 - `codeSamples.includeLanguages` narrows languages; `codeSamples.rename` renames sample tabs (case-insensitive).

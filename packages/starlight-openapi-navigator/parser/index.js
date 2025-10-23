@@ -132,22 +132,39 @@ const DEFAULT_UNTAGGED_NAME = 'Untagged';
 /**
  * Load and normalize an OpenAPI specification for downstream page generation.
  *
- * @param {string} specPath
+ * @param {string | { type: 'url', url: string } | { type: 'file', path: string }} specPath
  * @returns {Promise<NormalizedOpenApiSpec>}
  */
 export async function loadAndNormalizeSpec(specPath) {
-  const absolutePath = path.isAbsolute(specPath)
-    ? specPath
-    : path.join(process.cwd(), specPath);
+  const specSource = normalizeSpecSource(specPath);
+  const sourceLabel = specSource.type === 'url' ? specSource.url : specSource.path;
 
   let rawContents;
-  try {
-    rawContents = await fs.readFile(absolutePath, 'utf8');
-  } catch (error) {
-    throw new Error(
-      `starlight-openapi-navigator: Unable to read OpenAPI spec at ${absolutePath}.` +
-        `\n→ ${error?.message || error}`
-    );
+  if (specSource.type === 'url') {
+    try {
+      const response = await fetch(specSource.url);
+      if (!response.ok) {
+        throw new Error(
+          `Received ${response.status} ${response.statusText || ''}`.trim()
+        );
+      }
+      rawContents = await response.text();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `starlight-openapi-navigator: Unable to fetch OpenAPI spec from ${specSource.url}.` +
+          `\n→ ${reason}`
+      );
+    }
+  } else {
+    try {
+      rawContents = await fs.readFile(specSource.path, 'utf8');
+    } catch (error) {
+      throw new Error(
+        `starlight-openapi-navigator: Unable to read OpenAPI spec at ${specSource.path}.` +
+          `\n→ ${error?.message || error}`
+      );
+    }
   }
 
   let document;
@@ -155,14 +172,14 @@ export async function loadAndNormalizeSpec(specPath) {
     document = parse(rawContents);
   } catch (error) {
     throw new Error(
-      `starlight-openapi-navigator: Failed to parse OpenAPI spec at ${absolutePath}.` +
+      `starlight-openapi-navigator: Failed to parse OpenAPI spec at ${sourceLabel}.` +
         `\n→ ${error?.message || error}`
     );
   }
 
   if (!isPlainObject(document)) {
     throw new Error(
-      `starlight-openapi-navigator: Expected OpenAPI document at ${absolutePath} to be an object.`
+      `starlight-openapi-navigator: Expected OpenAPI document at ${sourceLabel} to be an object.`
     );
   }
 
@@ -334,7 +351,7 @@ export async function loadAndNormalizeSpec(specPath) {
   const schemas = normalizeSchemas(document.components?.schemas);
 
   return {
-    sourcePath: absolutePath,
+    sourcePath: sourceLabel,
     document,
     info: isPlainObject(document.info) ? document.info : {},
     servers: Array.isArray(document.servers) ? document.servers : [],
@@ -344,6 +361,41 @@ export async function loadAndNormalizeSpec(specPath) {
     stats,
     schemas,
   };
+}
+
+function normalizeSpecSource(input) {
+  if (input && typeof input === 'object') {
+    if (input.type === 'url' && typeof input.url === 'string') {
+      return { type: 'url', url: input.url.trim() };
+    }
+    if (input.type === 'file' && typeof input.path === 'string') {
+      const pathValue = input.path.trim();
+      const absolutePath = path.isAbsolute(pathValue)
+        ? pathValue
+        : path.join(process.cwd(), pathValue);
+      return { type: 'file', path: absolutePath };
+    }
+  }
+
+  if (typeof input === 'string') {
+    const trimmed = input.trim();
+    if (isRemoteSpecPath(trimmed)) {
+      return { type: 'url', url: trimmed };
+    }
+    const target = trimmed || 'public/openapi.yaml';
+    const absolutePath = path.isAbsolute(target)
+      ? target
+      : path.join(process.cwd(), target);
+    return { type: 'file', path: absolutePath };
+  }
+
+  const fallbackPath = path.join(process.cwd(), 'public', 'openapi.yaml');
+  return { type: 'file', path: fallbackPath };
+}
+
+function isRemoteSpecPath(value) {
+  if (typeof value !== 'string') return false;
+  return /^https?:\/\//i.test(value.trim());
 }
 
 function extractOperationId(operation, method, pathKey) {

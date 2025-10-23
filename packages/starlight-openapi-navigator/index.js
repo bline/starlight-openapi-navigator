@@ -80,9 +80,13 @@ function resolveOptions(options = {}) {
   const baseSlug = normalizeBaseSlug(options.baseSlug);
   const defaultOutputDir = options.outputDir ?? path.join('src', 'pages', ...slugToSegments(baseSlug));
   const navigation = normalizeNavigationOptions(options.navigation, baseSlug);
+  const specPath = options.specPath ?? 'public/openapi.yaml';
+  const specSource = resolveSpecSource(specPath);
 
   const resolved = {
-    specPath: options.specPath ?? 'public/openapi.yaml',
+    specPath,
+    specSource,
+    specLabel: formatSpecLabel(specSource),
     watchSpec: options.watchSpec ?? true,
     baseSlug,
     outputDir: defaultOutputDir,
@@ -101,9 +105,10 @@ function resolveOptions(options = {}) {
     navigation,
   };
 
-  resolved.specAbsolutePath = path.isAbsolute(resolved.specPath)
-    ? resolved.specPath
-    : path.join(process.cwd(), resolved.specPath);
+  if (specSource.type === 'file') {
+    resolved.specFilePath = specSource.path;
+  }
+
   resolved.generatedDocsDir = path.isAbsolute(resolved.outputDir)
     ? resolved.outputDir
     : path.join(process.cwd(), resolved.outputDir);
@@ -151,7 +156,7 @@ function createIntegration(resolvedOptions) {
     if (regeneratePromise) return regeneratePromise;
     regeneratePromise = (async () => {
       await resetGeneratedDocsDir();
-      const rawSpec = await loadAndNormalizeSpec(resolvedOptions.specAbsolutePath);
+      const rawSpec = await loadAndNormalizeSpec(resolvedOptions.specSource);
       normalizedSpec = customizeSpec(rawSpec, resolvedOptions);
       devProxyTable = buildDevProxyTable(normalizedSpec);
       await writeConfigModule();
@@ -172,7 +177,7 @@ function createIntegration(resolvedOptions) {
         baseSlug: resolvedOptions.baseSlug,
       });
       logger.info(
-        `starlight-openapi-navigator: generated ${normalizedSpec.stats.operations} operation page(s) from ${path.relative(process.cwd(), resolvedOptions.specAbsolutePath)}.`
+        `starlight-openapi-navigator: generated ${normalizedSpec.stats.operations} operation page(s) from ${resolvedOptions.specLabel}.`
       );
     })()
       .catch((error) => {
@@ -198,10 +203,12 @@ function createIntegration(resolvedOptions) {
         command,
       }) => {
         logger.debug(
-          `starlight-openapi-navigator: using spec at ${resolvedOptions.specAbsolutePath}`
+          `starlight-openapi-navigator: using spec at ${resolvedOptions.specLabel}`
         );
 
-        addWatchFile(resolvedOptions.specAbsolutePath);
+        if (resolvedOptions.specSource.type === 'file' && resolvedOptions.specFilePath) {
+          addWatchFile(resolvedOptions.specFilePath);
+        }
 
         const codegenDirUrl = createCodegenDir();
         codegenDirPath = fileURLToPath(codegenDirUrl);
@@ -241,11 +248,17 @@ function createIntegration(resolvedOptions) {
         }
       },
       'astro:server:setup': async ({ server, logger }) => {
-        if (!resolvedOptions.watchSpec) return;
+        if (
+          !resolvedOptions.watchSpec ||
+          resolvedOptions.specSource.type !== 'file' ||
+          !resolvedOptions.specFilePath
+        ) {
+          return;
+        }
         const watcherHandler = (changedPath) => {
-          if (path.resolve(changedPath) === resolvedOptions.specAbsolutePath) {
+          if (path.resolve(changedPath) === resolvedOptions.specFilePath) {
             logger.debug(
-              `starlight-openapi-navigator: detected change in ${resolvedOptions.specAbsolutePath}, regenerating…`
+              `starlight-openapi-navigator: detected change in ${resolvedOptions.specFilePath}, regenerating…`
             );
             regenerateArtifacts(logger);
           }
@@ -264,6 +277,37 @@ function createIntegration(resolvedOptions) {
       },
     },
   };
+}
+
+function resolveSpecSource(rawInput) {
+  const value = typeof rawInput === 'string' ? rawInput.trim() : '';
+  if (isRemoteSpecPath(value)) {
+    return { type: 'url', url: value };
+  }
+  const input = value || 'public/openapi.yaml';
+  const absolutePath = path.isAbsolute(input) ? input : path.join(process.cwd(), input);
+  return { type: 'file', path: absolutePath };
+}
+
+function isRemoteSpecPath(value) {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  return /^https?:\/\//i.test(trimmed);
+}
+
+function formatSpecLabel(specSource) {
+  if (!specSource || typeof specSource !== 'object') return 'unknown spec source';
+  if (specSource.type === 'url' && typeof specSource.url === 'string') {
+    return specSource.url;
+  }
+  if (specSource.type === 'file' && typeof specSource.path === 'string') {
+    const relative = path.relative(process.cwd(), specSource.path);
+    if (relative && !relative.startsWith('..')) {
+      return relative || specSource.path;
+    }
+    return specSource.path;
+  }
+  return 'unknown spec source';
 }
 
 function normalizeBaseSlug(input) {

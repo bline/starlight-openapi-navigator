@@ -77,7 +77,7 @@ A week-long push to get **Starlight OpenAPI Navigator** ready for OSS release.
 
 ## 5) **Remote Spec URL Support**
 
-* **P0** ☐ Accept `spec` as **URL** (JSON/YAML) at build & dev time
+* **P0** ☑ Accept `spec` as **URL** (JSON/YAML) at build & dev time
   **AC:** `spec: 'https://…/openapi.{json|yaml}'` generates overview, endpoints, schemas exactly like local files.
 * **P0** ☐ Build-time fetch with caching & limits
   **AC:** ETag/If-None-Match respected; `maxBytes`, `timeoutMs` enforced; helpful error page on failure.
@@ -227,4 +227,3 @@ A week-long push to get **Starlight OpenAPI Navigator** ready for OSS release.
 ## Changelog (planned)
 
 * `v0.1.0`: Static multi-page OpenAPI docs for Starlight; **scoped storage**; **remote spec URL** (with ETag & limits); dev proxy + badge; Try-it; schema explorer; API key auth; deep links; search/TOC integration; examples; CI.
-
