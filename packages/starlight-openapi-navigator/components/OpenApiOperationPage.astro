@@ -5,14 +5,25 @@ import { Tabs, TabItem, Code, Icon } from '@astrojs/starlight/components';
 import AnchorHeading from '@astrojs/starlight/components/AnchorHeading.astro';
 
 import SchemaForm from './OpenApiSchemaForm.astro';
+import OpenApiEndpointSearch from './OpenApiEndpointSearch.astro';
 
 import { DEFAULT_BASE_SLUG } from '../runtime/config.js';
+import { buildOperationIndex } from '../runtime/operations.js';
+import { resolveEndpointUIMode } from '../runtime/endpoint-ui.js';
 
 const { tagSlug, operationSlug } = Astro.props;
 const tag = spec.tags?.find((entry) => entry.slug === tagSlug);
 const configuredSlug = typeof generatedConfig?.baseSlug === 'string' && generatedConfig.baseSlug.length
   ? generatedConfig.baseSlug
   : DEFAULT_BASE_SLUG;
+const configuredEndpointUI =
+  typeof generatedConfig?.endpointUI === 'string' ? generatedConfig.endpointUI : 'auto';
+const resolvedEndpointUI =
+  typeof generatedConfig?.resolvedEndpointUI === 'string'
+    ? generatedConfig.resolvedEndpointUI
+    : resolveEndpointUIMode(configuredEndpointUI, spec?.stats?.operations || 0);
+const operationsIndex = buildOperationIndex(spec, configuredSlug);
+const showSearch = resolvedEndpointUI === 'search' && operationsIndex.length > 0;
 
 const schemaSlugMap = new Map(
   Array.isArray(spec.schemas)
@@ -716,12 +727,32 @@ const resolveSchemaReference = (ref) => {
 
 {!tag && (
   <div class="api-operation-page__missing">
+    {showSearch && (
+      <div class="api-operation-page__search">
+        <OpenApiEndpointSearch
+          operations={operationsIndex}
+          inputId="operation-endpoint-search"
+          label="Jump to an endpoint"
+          helperText="Search across the documented endpoints to locate the right tag."
+        />
+      </div>
+    )}
     <p>Unable to locate the <code>{tagSlug}</code> tag in the bundled OpenAPI spec.</p>
   </div>
 )}
 
 {tag && !selectedOperation && (
   <div class="api-operation-page__missing">
+    {showSearch && (
+      <div class="api-operation-page__search">
+        <OpenApiEndpointSearch
+          operations={operationsIndex}
+          inputId="operation-endpoint-search"
+          label="Jump to an endpoint"
+          helperText="Search for another endpoint to continue."
+        />
+      </div>
+    )}
     <p>
       Unable to find the <code>{operationSlug}</code> operation within the <code>{tagSlug}</code> tag.
     </p>
@@ -739,6 +770,16 @@ const resolveSchemaReference = (ref) => {
         id={`tryit-config-${tryItConfig.slug}`}
         set:html={stringifyForScript(tryItConfig)}
       ></script>
+    )}
+    {showSearch && (
+      <div class="api-operation__search">
+        <OpenApiEndpointSearch
+          operations={operationsIndex}
+          inputId="operation-endpoint-search"
+          label="Jump to an endpoint"
+          helperText="Search to quickly navigate to another endpoint."
+        />
+      </div>
     )}
     <section id={selectedOperation.slug} class="api-operation" data-operation-slug={selectedOperation.slug}>
       <header class="api-operation__header">
@@ -1992,6 +2033,14 @@ const resolveSchemaReference = (ref) => {
   display: flex;
   flex-direction: column;
   gap: 2rem;
+}
+
+.api-operation-page__search {
+  margin-bottom: 1.5rem;
+}
+
+.api-operation__search {
+  margin-bottom: 2rem;
 }
 
 .api-operation-page__missing {

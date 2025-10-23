@@ -6,7 +6,7 @@ Starlight OpenAPI Navigator is a first-class Astro/Starlight integration that tu
 
 - **Full-site generation** – Emits static `.astro` pages for overview, operations, and schemas, so production deploys stay lightweight and cache-friendly.
 - **Endpoint workspaces** – Every operation gets a deep-linkable route with tabbed panels for parameters, responses, code samples, and an integrated “Try it live” runner with API key storage.
-- **Schema explorer** – Browsable component schemas with anchor links, references resolved from `$ref`, and shared with endpoint panels.
+- **Schema explorer** – Dedicated page per schema with `$ref` links and a global searchable selector for quick jumps.
 - **Native Starlight UX** – Uses AnchorHeading, Tabs, ToC, color themes, and search just like any other Starlight page—no iframes or runtime embeds.
 - **Smart navigation** – Optional sidebar injection that groups operations by tag with customizable ordering, labeling, and badges.
 - **Developer ergonomics** – Watches your spec in dev, regenerates pages instantly, hydrates code samples per language, and spins up a Vite proxy based on declared servers to bypass dev-time CORS.
@@ -79,9 +79,23 @@ Navigator can bootstrap from any publicly reachable `http://` or `https://` Open
   - Sample responses with example payloads
   - Language-tabbed code samples (filtered/renamed via config)
   - “Try it live” client that respects auth headers, servers, and schema-derived forms
-- **Schema explorer** – Lists components with anchors so definitions are referenceable from operation pages and the ToC.
+- **Schema pages** – Each component schema gets its own page with anchored sections and a searchable selector for jumping between schemas.
 
 All headings participate in Starlight’s deep linking and global search index.
+
+## Endpoint Navigation Modes
+
+Use the `endpointUI` option to control how endpoints are surfaced:
+
+- `menu` – Keep the per-tag listing on the overview page and, when sidebar navigation is enabled, populate it with tag groups.
+- `search` – Replace the overview listing with an inline autocomplete widget and surface the same control at the top of every operation page. Endpoint groups are omitted from the sidebar to keep it compact.
+- `auto` (default) – Stick with the menu until the spec exceeds 20 operations, then switch to search mode automatically.
+
+The search widget runs entirely client-side using pre-generated JSON embedded in each page, so no additional network calls are required.
+
+## Schema Navigation
+
+Each schema now renders on its own page under `/api/schemas/<schema>/`. The schema index and every schema detail page include an always-open searchable selector (no extra network fetches) that filters the list in-place so you can jump quickly between schemas—even for very large specifications.
 
 ## Dev Proxy & “Try it Live”
 
@@ -158,6 +172,7 @@ Key behaviors:
 - `codeSamples.includeLanguages` narrows languages; `codeSamples.rename` renames sample tabs (case-insensitive).
 - `navigation.enabled` injects the generated hierarchy into the Starlight sidebar, with options to replace or reposition groups.
 - `navigation.schemasItem = false` removes the schemas entry entirely.
+- `endpointUI` toggles endpoint navigation (`menu`, `search`, or `auto`). Auto switches to search mode once the spec exceeds 20 operations.
 
 ## Project Layout
 

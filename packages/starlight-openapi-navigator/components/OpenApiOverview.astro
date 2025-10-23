@@ -2,6 +2,9 @@
 import spec from 'virtual:starlight-openapi-navigator/spec-data';
 import generatedConfig from 'virtual:starlight-openapi-navigator/config';
 import { DEFAULT_BASE_SLUG } from '../runtime/config.js';
+import { buildOperationIndex } from '../runtime/operations.js';
+import { resolveEndpointUIMode } from '../runtime/endpoint-ui.js';
+import OpenApiEndpointSearch from './OpenApiEndpointSearch.astro';
 
 const extractSecuritySchemes = (raw) => {
   if (!raw || typeof raw !== 'object') return [];
@@ -58,6 +61,17 @@ const tagGroups = Array.isArray(spec.tags)
         : [],
     }))
   : [];
+
+const configuredEndpointUI =
+  typeof generatedConfig?.endpointUI === 'string' ? generatedConfig.endpointUI : 'auto';
+const resolvedEndpointUI =
+  typeof generatedConfig?.resolvedEndpointUI === 'string'
+    ? generatedConfig.resolvedEndpointUI
+    : resolveEndpointUIMode(configuredEndpointUI, stats.operations || 0);
+const operationsIndex = buildOperationIndex(spec, configuredSlug);
+const hasOperations = operationsIndex.length > 0;
+const showMenu = resolvedEndpointUI === 'menu' && tagGroups.some(({ operations }) => operations.length > 0);
+const showSearch = resolvedEndpointUI === 'search' && hasOperations;
 ---
 
 <div class="api-overview sl-markdown-content">
@@ -119,43 +133,56 @@ const tagGroups = Array.isArray(spec.tags)
     </section>
   )}
 
-  <section>
-    <h2 id="browse">Browse by tag</h2>
-    <div class="api-overview__tag-grid">
-      {tagGroups
-        .filter(({ operations }) => operations.length > 0)
-        .map(({ tag, operations }) => (
-          <article class="api-overview__tag-card">
-            <header>
-              <h3 class="name">{getTagDisplayName(tag)}</h3>
-              <span class="meta">{operations.length} {operations.length === 1 ? 'operation' : 'operations'}</span>
-            </header>
-            {tag.description && <p class="summary">{tag.description}</p>}
-            <ul class="api-overview__operation-list">
-              {operations.map((operation) => (
-                <li>
-                  <a
-                    class="api-overview__operation-link"
-                    href={`${baseHref}/${tag.slug}/${operation.slug}/`}
-                  >
-                    <span class={`api-overview__operation-method api-overview__operation-method--${operation.method.toLowerCase()}`}>
-                      {operation.method}
-                    </span>
-                    <code>{operation.path}</code>
-                  </a>
-                  {operation.summary && (
-                    <p class="api-overview__operation-summary">{operation.summary}</p>
-                  )}
-                  {operation.deprecated && (
-                    <span class="api-overview__operation-badge">Deprecated</span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </article>
-        ))}
-    </div>
-  </section>
+  {showMenu && (
+    <section>
+      <h2 id="browse">Browse by tag</h2>
+      <div class="api-overview__tag-grid">
+        {tagGroups
+          .filter(({ operations }) => operations.length > 0)
+          .map(({ tag, operations }) => (
+            <article class="api-overview__tag-card">
+              <header>
+                <h3 class="name">{getTagDisplayName(tag)}</h3>
+                <span class="meta">{operations.length} {operations.length === 1 ? 'operation' : 'operations'}</span>
+              </header>
+              {tag.description && <p class="summary">{tag.description}</p>}
+              <ul class="api-overview__operation-list">
+                {operations.map((operation) => (
+                  <li>
+                    <a
+                      class="api-overview__operation-link"
+                      href={`${baseHref}/${tag.slug}/${operation.slug}/`}
+                    >
+                      <span class={`api-overview__operation-method api-overview__operation-method--${operation.method.toLowerCase()}`}>
+                        {operation.method}
+                      </span>
+                      <code>{operation.path}</code>
+                    </a>
+                    {operation.summary && (
+                      <p class="api-overview__operation-summary">{operation.summary}</p>
+                    )}
+                    {operation.deprecated && (
+                      <span class="api-overview__operation-badge">Deprecated</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </article>
+          ))}
+      </div>
+    </section>
+  )}
+
+  {showSearch && (
+    <section>
+      <h2 id="search">Search endpoints</h2>
+      <OpenApiEndpointSearch
+        operations={operationsIndex}
+        inputId="overview-endpoint-search"
+        helperText="Start typing to filter endpoints by path, method, tag, or summary."
+      />
+    </section>
+  )}
 
   {Array.isArray(spec.schemas) && spec.schemas.length > 0 && (
     <section>

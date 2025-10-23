@@ -16,6 +16,7 @@ import { DEFAULT_BASE_SLUG } from '../runtime/config.js';
  * @property {AstroIntegrationLogger} logger
  * @property {string} outputDir Directory where the base slug lives (e.g. `src/pages/api`).
  * @property {string} baseSlug
+ * @property {'menu'|'search'} [endpointUI]
  */
 
 const PACKAGE_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -23,7 +24,8 @@ const COMPONENTS_DIR = path.join(PACKAGE_ROOT, 'components');
 
 const OVERVIEW_COMPONENT = 'OpenApiOverview.astro';
 const OPERATION_COMPONENT = 'OpenApiOperationPage.astro';
-const SCHEMAS_COMPONENT = 'OpenApiSchemaExplorer.astro';
+const SCHEMA_INDEX_COMPONENT = 'OpenApiSchemaIndex.astro';
+const SCHEMA_DETAIL_COMPONENT = 'OpenApiSchemaPage.astro';
 
 const OVERVIEW_FILENAME = 'index.astro';
 const PAGE_FILENAME = 'index.astro';
@@ -36,7 +38,7 @@ const SCHEMAS_DIRNAME = 'schemas';
  * @param {PageGenerationContext} ctx
  */
 export async function generateOverviewPage(spec, ctx) {
-  const { outputDir, baseSlug } = ctx;
+  const { outputDir, baseSlug, endpointUI } = ctx;
   await fs.mkdir(outputDir, { recursive: true });
 
   const filePath = path.join(outputDir, OVERVIEW_FILENAME);
@@ -57,7 +59,7 @@ export async function generateOverviewPage(spec, ctx) {
     },
   };
 
-  const headings = buildOverviewHeadings(spec);
+  const headings = buildOverviewHeadings(spec, endpointUI);
 
   const source = buildStarlightPageSource({
     componentName: 'OpenApiOverview',
@@ -152,7 +154,7 @@ export async function generateOperationPages(spec, ctx) {
   await Promise.all(writes);
 }
 
-export async function generateSchemaExplorerPage(spec, ctx) {
+export async function generateSchemaIndexPage(spec, ctx) {
   if (!Array.isArray(spec.schemas) || spec.schemas.length === 0) return;
   const { outputDir, baseSlug } = ctx;
   const resolvedSlug = baseSlug || DEFAULT_BASE_SLUG;
@@ -163,7 +165,7 @@ export async function generateSchemaExplorerPage(spec, ctx) {
 
   const frontmatter = {
     title: 'API Schemas',
-    description: 'Browse component schemas from the OpenAPI document.',
+    description: 'Browse and filter reusable component schemas from the OpenAPI document.',
     slug: `${resolvedSlug}/schemas`,
     sidebar: {
       label: 'Schemas',
@@ -171,21 +173,90 @@ export async function generateSchemaExplorerPage(spec, ctx) {
     },
   };
 
-  const headings = (spec.schemas || []).map((schema) => ({
-    depth: 2,
-    slug: schema.slug,
-    text: schema.name,
-  }));
+  const headings = [
+    {
+      depth: 2,
+      slug: 'schema-picker',
+      text: 'Schemas',
+    },
+  ];
 
+  const schemaList = buildSchemaList(spec.schemas, resolvedSlug);
   const source = buildStarlightPageSource({
-    componentName: 'OpenApiSchemaExplorer',
-    componentFilename: SCHEMAS_COMPONENT,
+    componentName: 'OpenApiSchemaIndex',
+    componentFilename: SCHEMA_INDEX_COMPONENT,
     filePath,
     frontmatter,
     headings,
+    componentProps: [
+      `schemas={${serialize(schemaList)}}`,
+      `baseSlug=${JSON.stringify(resolvedSlug)}`,
+    ],
   });
 
   await fs.writeFile(filePath, source, 'utf8');
+}
+
+export async function generateSchemaDetailPages(spec, ctx) {
+  if (!Array.isArray(spec.schemas) || spec.schemas.length === 0) return;
+  const { outputDir, baseSlug, logger } = ctx;
+  const resolvedSlug = baseSlug || DEFAULT_BASE_SLUG;
+  const schemaDir = path.join(outputDir, SCHEMAS_DIRNAME);
+  await fs.mkdir(schemaDir, { recursive: true });
+
+  const schemaList = buildSchemaList(spec.schemas, resolvedSlug);
+
+  const writes = spec.schemas.map((schema, index) => {
+    if (!schema?.slug) {
+      if (logger && typeof logger.warn === 'function') {
+        logger.warn('starlight-openapi-navigator: encountered schema without slug - skipping.');
+      }
+      return Promise.resolve();
+    }
+
+    const detailDir = path.join(schemaDir, schema.slug);
+    const filePath = path.join(detailDir, PAGE_FILENAME);
+    const frontmatter = {
+      title: schema.name ? `${schema.name} schema` : 'API schema',
+      description: schema.description
+        ? truncate(stripMarkdown(schema.description), 240)
+        : `Reference for the ${schema.name || schema.slug} schema.`,
+      slug: `${resolvedSlug}/schemas/${schema.slug}`,
+      sidebar: {
+        hidden: true,
+        order: index,
+      },
+    };
+
+    const headings = [
+      {
+        depth: 2,
+        slug: schema.slug,
+        text: schema.name || schema.slug,
+      },
+    ];
+
+    return fs
+      .mkdir(detailDir, { recursive: true })
+      .then(() => {
+        const source = buildStarlightPageSource({
+          componentName: 'OpenApiSchemaPage',
+          componentFilename: SCHEMA_DETAIL_COMPONENT,
+          filePath,
+          frontmatter,
+          headings,
+          componentProps: [
+            `schemaData={${serialize(schema)}}`,
+            `schemas={${serialize(schemaList)}}`,
+            `currentSlug=${JSON.stringify(schema.slug)}`,
+            `baseSlug=${JSON.stringify(resolvedSlug)}`,
+          ],
+        });
+        return fs.writeFile(filePath, source, 'utf8');
+      });
+  });
+
+  await Promise.all(writes);
 }
 
 function buildStarlightPageSource({
@@ -240,7 +311,7 @@ function buildStarlightPageSource({
   return ['---', ...scriptLines, '---', '', body, ''].join('\n');
 }
 
-function buildOverviewHeadings(spec) {
+function buildOverviewHeadings(spec, endpointUI = 'menu') {
   const headings = [];
   if (Array.isArray(spec.servers) && spec.servers.length > 0) {
     headings.push({ depth: 2, slug: 'servers', text: 'Servers' });
@@ -253,8 +324,12 @@ function buildOverviewHeadings(spec) {
   if (hasSecurity) {
     headings.push({ depth: 2, slug: 'auth', text: 'Authentication' });
   }
-  if (Array.isArray(spec.tags) && spec.tags.length > 0) {
+  const mode = endpointUI === 'search' ? 'search' : 'menu';
+  const hasTags = Array.isArray(spec.tags) && spec.tags.length > 0;
+  if (mode === 'menu' && hasTags) {
     headings.push({ depth: 2, slug: 'browse', text: 'Browse by tag' });
+  } else if (mode === 'search' && (spec?.stats?.operations || 0) > 0) {
+    headings.push({ depth: 2, slug: 'search', text: 'Search endpoints' });
   }
   if (Array.isArray(spec.schemas) && spec.schemas.length > 0) {
     headings.push({ depth: 2, slug: 'schemas', text: 'Component schemas' });
@@ -291,6 +366,41 @@ function buildOperationHeadings(operation) {
   addHeading(true, 'try-it', 'Try it live');
 
   return headings;
+}
+
+function buildSchemaList(schemas, baseSlug) {
+  if (!Array.isArray(schemas)) return [];
+  const entries = schemas
+    .filter((schema) => schema && typeof schema.slug === 'string' && schema.slug.length)
+    .map((schema) => {
+      const name = schema.name || schema.slug;
+      const href = joinUrlSegments(baseSlug, 'schemas', schema.slug);
+      return {
+        name,
+        slug: schema.slug,
+        href,
+      };
+    });
+
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  return entries;
+}
+
+function joinUrlSegments(...segments) {
+  const parts = [];
+  segments.forEach((segment) => {
+    if (typeof segment !== 'string') return;
+    segment
+      .split('/')
+      .map((part) => part.replace(/^\s+|\s+$/g, ''))
+      .forEach((part) => {
+        const cleaned = part.replace(/^\/+|\/+$/g, '');
+        if (cleaned) parts.push(cleaned);
+      });
+  });
+  if (parts.length === 0) return '/';
+  const joined = `/${parts.join('/')}`;
+  return joined.endsWith('/') ? joined : `${joined}/`;
 }
 
 function serialize(value) {

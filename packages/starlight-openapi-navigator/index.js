@@ -3,7 +3,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadAndNormalizeSpec } from './parser/index.js';
-import { generateOverviewPage, generateOperationPages, generateSchemaExplorerPage } from './pages/index.js';
+import {
+  generateOverviewPage,
+  generateOperationPages,
+  generateSchemaIndexPage,
+  generateSchemaDetailPages,
+} from './pages/index.js';
+import {
+  normalizeEndpointUI,
+  resolveEndpointUIMode,
+} from './runtime/endpoint-ui.js';
 
 /**
  * @typedef {object} StarlightOpenApiNavigatorOptions
@@ -11,6 +20,7 @@ import { generateOverviewPage, generateOperationPages, generateSchemaExplorerPag
  * @property {boolean} [watchSpec] Whether to watch the spec file in dev and regenerate docs automatically. Defaults to `true`.
  * @property {string} [baseSlug] Base docs slug for generated pages. Defaults to `api`.
  * @property {string} [outputDir] Relative path (from project root) to emit generated Astro pages. Defaults to `src/pages/<baseSlug>`.
+ * @property {'auto'|'menu'|'search'} [endpointUI] Controls the endpoint browsing UI. Defaults to `auto`.
  * @property {object} [navigation] Sidebar auto-population options.
  * @property {boolean} [navigation.enabled] When true, injects generated tag/operation links into the Starlight sidebar.
  * @property {string} [navigation.groupLabel] Label for the generated sidebar group. Defaults to "API Explorer".
@@ -47,12 +57,17 @@ export function starlightOpenApiNavigator(options = {}) {
         if (!resolvedOptions.navigation.enabled) return;
 
         try {
-          const rawSpec = await loadAndNormalizeSpec(resolvedOptions.specAbsolutePath);
+          const rawSpec = await loadAndNormalizeSpec(resolvedOptions.specSource);
           const normalized = customizeSpec(rawSpec, resolvedOptions);
+          const resolvedEndpointUI = resolveEndpointUIMode(
+            resolvedOptions.endpointUI,
+            normalized?.stats?.operations ?? 0
+          );
           const navigationGroup = buildNavigationGroup(
             normalized,
             resolvedOptions.navigation,
-            resolvedOptions.baseSlug
+            resolvedOptions.baseSlug,
+            resolvedEndpointUI
           );
           if (!navigationGroup) return;
 
@@ -82,6 +97,7 @@ function resolveOptions(options = {}) {
   const navigation = normalizeNavigationOptions(options.navigation, baseSlug);
   const specPath = options.specPath ?? 'public/openapi.yaml';
   const specSource = resolveSpecSource(specPath);
+  const endpointUI = normalizeEndpointUI(options.endpointUI);
 
   const resolved = {
     specPath,
@@ -102,6 +118,7 @@ function resolveOptions(options = {}) {
         : null,
       rename: options.codeSamples?.rename ? { ...options.codeSamples.rename } : {},
     },
+    endpointUI,
     navigation,
   };
 
@@ -125,6 +142,7 @@ function createIntegration(resolvedOptions) {
   let configModulePath = '';
   let regeneratePromise = null;
   let devProxyTable = [];
+  let resolvedEndpointUI = resolveEndpointUIMode(resolvedOptions.endpointUI, 0);
 
   const resetGeneratedDocsDir = async () => {
     if (resolvedOptions.legacyDocsDir !== resolvedOptions.generatedDocsDir) {
@@ -148,7 +166,11 @@ function createIntegration(resolvedOptions) {
       resolvedOptions.baseSlug
     )};\nexport const outputDir = ${JSON.stringify(
       resolvedOptions.outputDir
-    )};\nexport const devProxyTable = ${safeProxyTable};\nexport default { baseSlug, outputDir, devProxyTable };\n`;
+    )};\nexport const endpointUI = ${JSON.stringify(
+      resolvedOptions.endpointUI
+    )};\nexport const resolvedEndpointUI = ${JSON.stringify(
+      resolvedEndpointUI
+    )};\nexport const devProxyTable = ${safeProxyTable};\nexport default { baseSlug, outputDir, endpointUI, resolvedEndpointUI, devProxyTable };\n`;
     await fs.writeFile(configModulePath, moduleSource, 'utf8');
   };
 
@@ -158,6 +180,10 @@ function createIntegration(resolvedOptions) {
       await resetGeneratedDocsDir();
       const rawSpec = await loadAndNormalizeSpec(resolvedOptions.specSource);
       normalizedSpec = customizeSpec(rawSpec, resolvedOptions);
+      resolvedEndpointUI = resolveEndpointUIMode(
+        resolvedOptions.endpointUI,
+        normalizedSpec?.stats?.operations ?? 0
+      );
       devProxyTable = buildDevProxyTable(normalizedSpec);
       await writeConfigModule();
       await writeSpecModule(normalizedSpec);
@@ -165,13 +191,19 @@ function createIntegration(resolvedOptions) {
         logger,
         outputDir: resolvedOptions.generatedDocsDir,
         baseSlug: resolvedOptions.baseSlug,
+        endpointUI: resolvedEndpointUI,
       });
       await generateOperationPages(normalizedSpec, {
         logger,
         outputDir: resolvedOptions.generatedDocsDir,
         baseSlug: resolvedOptions.baseSlug,
       });
-      await generateSchemaExplorerPage(normalizedSpec, {
+      await generateSchemaIndexPage(normalizedSpec, {
+        logger,
+        outputDir: resolvedOptions.generatedDocsDir,
+        baseSlug: resolvedOptions.baseSlug,
+      });
+      await generateSchemaDetailPages(normalizedSpec, {
         logger,
         outputDir: resolvedOptions.generatedDocsDir,
         baseSlug: resolvedOptions.baseSlug,
@@ -526,12 +558,13 @@ function customizeSpec(spec, options) {
   return cloned;
 }
 
-function buildNavigationGroup(spec, navigation, baseSlug) {
+function buildNavigationGroup(spec, navigation, baseSlug, endpointUI = 'menu') {
   if (!navigation?.enabled || !Array.isArray(spec?.tags)) return null;
 
   const tags = navigation.tagSort === 'alpha'
     ? [...spec.tags].sort((a, b) => getTagLabel(a).localeCompare(getTagLabel(b)))
     : [...spec.tags];
+  const includeOperations = endpointUI === 'menu';
 
   const items = [];
 
@@ -539,49 +572,51 @@ function buildNavigationGroup(spec, navigation, baseSlug) {
     items.push(navigation.overviewItem);
   }
 
-  tags.forEach((tag) => {
-    const operations = Array.isArray(tag.operations) ? [...tag.operations] : [];
-    if (!operations.length) return;
+  if (includeOperations) {
+    tags.forEach((tag) => {
+      const operations = Array.isArray(tag.operations) ? [...tag.operations] : [];
+      if (!operations.length) return;
 
-    if (navigation.operationSort === 'alpha') {
-      operations.sort((a, b) => {
-        const labelA = getOperationLabel(a, navigation.operationLabel);
-        const labelB = getOperationLabel(b, navigation.operationLabel);
-        return labelA.localeCompare(labelB);
+      if (navigation.operationSort === 'alpha') {
+        operations.sort((a, b) => {
+          const labelA = getOperationLabel(a, navigation.operationLabel);
+          const labelB = getOperationLabel(b, navigation.operationLabel);
+          return labelA.localeCompare(labelB);
+        });
+      }
+
+      const operationItems = operations
+        .filter((operation) => operation?.slug)
+        .map((operation) => {
+          const link = joinUrlSegments(baseSlug, tag.slug, operation.slug);
+          const label = getOperationLabel(operation, navigation.operationLabel);
+          let title = getOperationLabel(operation, navigation.operationTitle, { fallback: false });
+          if (!title) {
+            title = label;
+          }
+          /** @type {{ label: string, link: string, badge?: { text: string, variant?: string } }} */
+          const item = {
+            label,
+            link,
+          };
+          if (title) {
+            item.attrs = { title };
+          }
+          if (operation.deprecated) {
+            item.badge = { text: 'Deprecated', variant: 'caution' };
+          }
+          return item;
+        })
+        .filter(Boolean);
+
+      if (operationItems.length === 0) return;
+
+      items.push({
+        label: getTagLabel(tag),
+        items: operationItems,
       });
-    }
-
-    const operationItems = operations
-      .filter((operation) => operation?.slug)
-      .map((operation) => {
-        const link = joinUrlSegments(baseSlug, tag.slug, operation.slug);
-        const label = getOperationLabel(operation, navigation.operationLabel);
-        let title = getOperationLabel(operation, navigation.operationTitle, { fallback: false });
-        if (!title) {
-          title = label;
-        }
-        /** @type {{ label: string, link: string, badge?: { text: string, variant?: string } }} */
-        const item = {
-          label,
-          link,
-        };
-        if (title) {
-          item.attrs = { title };
-        }
-        if (operation.deprecated) {
-          item.badge = { text: 'Deprecated', variant: 'caution' };
-        }
-        return item;
-      })
-      .filter(Boolean);
-
-    if (operationItems.length === 0) return;
-
-    items.push({
-      label: getTagLabel(tag),
-      items: operationItems,
     });
-  });
+  }
 
   if (navigation.schemasItem && Array.isArray(spec.schemas) && spec.schemas.length > 0) {
     const schemasLink = navigation.schemasItem.link || joinUrlSegments(baseSlug, 'schemas');
