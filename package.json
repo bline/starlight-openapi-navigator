@@ -6,7 +6,7 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
-    "dev": "pnpm --filter demo dev"
+    "dev": "pnpm --filter demo dev --host 127.0.0.1 --port 8787"
   },
   "dependencies": {
     "@astrojs/starlight": "0.36.0"
