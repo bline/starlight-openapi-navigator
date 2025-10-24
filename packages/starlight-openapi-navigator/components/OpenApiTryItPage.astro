@@ -1,0 +1,70 @@
+---
+import { Tabs, TabItem, Icon } from '@astrojs/starlight/components';
+import AnchorHeading from '@astrojs/starlight/components/AnchorHeading.astro';
+import { loadOperation, loadSchemaDefinitions, getOperationPreferredTag } from 'virtual:starlight-openapi-navigator/spec-data';
+import generatedConfig from 'virtual:starlight-openapi-navigator/config';
+import '../runtime/theme.css';
+
+const { tagSlug, operationSlug } = Astro.props;
+const configuredSlug = typeof generatedConfig?.baseSlug === 'string' && generatedConfig.baseSlug.length
+  ? generatedConfig.baseSlug
+  : 'api';
+const preferredTag = getOperationPreferredTag(operationSlug) || tagSlug;
+---
+
+<div class="tryit-page sl-markdown-content">
+  <AnchorHeading level="2" id="try-it" class="tryit-page__heading">
+    Try this endpoint
+  </AnchorHeading>
+  <p class="tryit-page__intro">
+    This page hydrates on the client to keep builds fast. If you don’t see the interactive form, enable JavaScript and reload.
+  </p>
+  <div id="tryit-root" class="tryit-page__client">
+    <noscript>
+      JavaScript is required to use the live request builder.
+    </noscript>
+  </div>
+</div>
+
+<script type="module">
+  import("../runtime/try-it-client.js").then((mod) => {
+    if (!mod || typeof mod.mountTryIt !== 'function') return;
+    mod.mountTryIt({
+      rootId: 'tryit-root',
+      tagSlug: ${JSON.stringify(tagSlug)},
+      operationSlug: ${JSON.stringify(operationSlug)},
+      preferredTag: ${JSON.stringify(preferredTag)},
+      baseSlug: ${JSON.stringify(configuredSlug)},
+    });
+  }).catch((error) => {
+    console.error('Failed to bootstrap Try It form', error);
+  });
+</script>
+
+<style scoped>
+.tryit-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.tryit-page__heading {
+  margin-bottom: 0.5rem;
+}
+
+.tryit-page__intro {
+  margin: 0;
+  color: var(--color-muted-fg);
+}
+
+.tryit-page__client {
+  min-height: 6rem;
+  border: 1px dashed var(--color-border);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+</style>

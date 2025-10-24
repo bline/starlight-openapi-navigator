@@ -24,6 +24,7 @@ const COMPONENTS_DIR = path.join(PACKAGE_ROOT, 'components');
 
 const OVERVIEW_COMPONENT = 'OpenApiOverview.astro';
 const OPERATION_COMPONENT = 'OpenApiOperationPage.astro';
+const TRY_IT_COMPONENT = 'OpenApiTryItPage.astro';
 const SCHEMA_INDEX_COMPONENT = 'OpenApiSchemaIndex.astro';
 const SCHEMA_DETAIL_COMPONENT = 'OpenApiSchemaPage.astro';
 
@@ -128,6 +129,7 @@ export async function generateOperationPages(spec, ctx) {
       const headings = buildOperationHeadings(operation);
       const tagSlugLiteral = JSON.stringify(tag.slug);
       const operationSlugLiteral = JSON.stringify(operation.slug);
+      const tryItDir = path.join(operationDir, 'try');
 
       writes.push(
         fs
@@ -146,6 +148,42 @@ export async function generateOperationPages(spec, ctx) {
             });
 
             return fs.writeFile(filePath, source, 'utf8');
+          })
+      );
+
+      writes.push(
+        fs
+          .mkdir(tryItDir, { recursive: true })
+          .then(() => {
+            const tryFilePath = path.join(tryItDir, PAGE_FILENAME);
+            const tryFrontmatter = {
+              title: `${title} – Try it`,
+              description: `Interact with the ${method || operation.method?.toUpperCase?.() || ''} ${operation.path} endpoint using live requests.`,
+              slug: `${resolvedSlug}/${tag.slug}/${operation.slug}/try`,
+              sidebar: {
+                hidden: true,
+                order: tagIndex * 100 + operationIndex + 0.5,
+              },
+            };
+            const tryHeadings = [
+              {
+                depth: 2,
+                slug: 'try-it',
+                text: 'Try this endpoint',
+              },
+            ];
+            const trySource = buildStarlightPageSource({
+              componentName: 'OpenApiTryItPage',
+              componentFilename: TRY_IT_COMPONENT,
+              filePath: tryFilePath,
+              frontmatter: tryFrontmatter,
+              headings: tryHeadings,
+              componentProps: [
+                `tagSlug={${tagSlugLiteral}}`,
+                `operationSlug={${operationSlugLiteral}}`,
+              ],
+            });
+            return fs.writeFile(tryFilePath, trySource, 'utf8');
           })
       );
     });

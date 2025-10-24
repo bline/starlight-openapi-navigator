@@ -1,5 +1,5 @@
 ---
-import spec from 'virtual:starlight-openapi-navigator/spec-data';
+import spec, { loadOperation, getOperationPreferredTag, loadSchemaDefinitions } from 'virtual:starlight-openapi-navigator/spec-data';
 import generatedConfig from 'virtual:starlight-openapi-navigator/config';
 import '../runtime/theme.css';
 import { Tabs, TabItem, Code, Icon } from '@astrojs/starlight/components';
@@ -27,48 +27,29 @@ const resolvedEndpointUI =
 const operationsIndex = buildOperationIndex(spec, configuredSlug);
 const showSearch = resolvedEndpointUI === 'search' && operationsIndex.length > 0;
 
-const schemaSlugMap = new Map(
-  Array.isArray(spec.schemas)
-    ? spec.schemas.map((schema) => [schema.name, schema.slug])
-    : []
-);
-
-const schemaDefinitionMap = buildSchemaDefinitionMap(spec);
+const schemaDefinitions = await loadSchemaDefinitions();
+const schemaDefinitionMap = buildSchemaDefinitionMap(schemaDefinitions);
+const schemaSlugMap = buildSchemaSlugMap(spec);
+const schemaResolutionCache = new Map();
 const proxyTable = Array.isArray(generatedConfig?.devProxyTable)
   ? generatedConfig.devProxyTable
   : [];
 const proxyLookup = buildProxyLookup(proxyTable);
 const SUPPORTED_PRIMITIVE_TYPES = new Set(['string', 'number', 'integer', 'boolean']);
-const operationLookup = new Map(
-  Array.isArray(spec.operations)
-    ? spec.operations
-        .filter((operation) => operation && typeof operation.slug === 'string')
-        .map((operation) => [operation.slug, operation])
-    : []
-);
-
-const selectedOperation = (() => {
-  if (!operationSlug) return null;
-  const direct = operationLookup.get(operationSlug);
-  if (direct) return prepareOperation(direct);
-
-  if (Array.isArray(tag?.operations)) {
-    for (const entry of tag.operations) {
-      const candidate = operationLookup.get(entry?.slug);
-      if (candidate) {
-        return prepareOperation(candidate);
-      }
+const resolvedTagSlug = typeof tagSlug === 'string' && tagSlug.length ? tagSlug : tag?.slug;
+let selectedOperation = null;
+if (operationSlug) {
+  let remoteOperation = await loadOperation(operationSlug, resolvedTagSlug);
+  if (!remoteOperation) {
+    const fallbackTag = getOperationPreferredTag(operationSlug);
+    if (fallbackTag && fallbackTag !== resolvedTagSlug) {
+      remoteOperation = await loadOperation(operationSlug, fallbackTag);
     }
   }
-
-  const iterator = operationLookup.values();
-  const first = iterator.next();
-  if (!first.done && first.value) {
-    return prepareOperation(first.value);
+  if (remoteOperation) {
+    selectedOperation = prepareOperation(remoteOperation);
   }
-
-  return null;
-})();
+}
 
 const apiKeyFieldId = selectedOperation ? `tryit-api-key-${selectedOperation.slug}` : 'tryit-api-key';
 const panelIds = selectedOperation
@@ -77,7 +58,6 @@ const panelIds = selectedOperation
       requestBody: `${selectedOperation.slug}-request-body`,
       responses: `${selectedOperation.slug}-responses`,
       codeSamples: `${selectedOperation.slug}-code-samples`,
-      tryIt: `${selectedOperation.slug}-try-it`,
     }
   : {};
 
@@ -87,7 +67,6 @@ const panelStorageKeys = selectedOperation
       requestBody: `${selectedOperation.slug}:request-body`,
       responses: `${selectedOperation.slug}:responses`,
       codeSamples: `${selectedOperation.slug}:code-samples`,
-      tryIt: `${selectedOperation.slug}:try-it`,
     }
   : {};
 
@@ -96,10 +75,9 @@ const parameterGroups = selectedOperation ? buildParameterGroups(selectedOperati
 const pathParameters = parameterGroups.path;
 const queryParameters = parameterGroups.query;
 const headerParameters = parameterGroups.header;
-const bodyOptions = selectedOperation ? buildBodyOptions(selectedOperation) : [];
-const tryItConfig = selectedOperation
-  ? buildTryItConfig(selectedOperation, operationServers, bodyOptions)
-  : null;
+const tryItHref = selectedOperation
+  ? `/${configuredSlug}/${(tag?.slug || resolvedTagSlug)}/${selectedOperation.slug}/try/`
+  : '';
 
 function prepareOperation(operation) {
   const parameters = (operation.parameters || [])
@@ -152,26 +130,26 @@ function prepareOperation(operation) {
   };
 }
 
-function buildSchemaDefinitionMap(currentSpec) {
+function buildSchemaDefinitionMap(definitions) {
   /** @type {Map<string, Record<string, unknown>>} */
   const map = new Map();
-  const candidateSources = [
-    currentSpec?.document?.components?.schemas,
-    currentSpec?.components?.schemas,
-  ];
-  candidateSources.forEach((source) => {
-    if (source && typeof source === 'object') {
-      Object.entries(source).forEach(([name, schema]) => {
-        if (isPlainObject(schema)) {
-          map.set(name, schema);
-        }
-      });
-    }
-  });
+  if (definitions && typeof definitions === 'object') {
+    Object.entries(definitions).forEach(([name, schema]) => {
+      if (isPlainObject(schema)) {
+        map.set(name, schema);
+      }
+    });
+  }
+  return map;
+}
+
+function buildSchemaSlugMap(currentSpec) {
+  const map = new Map();
   if (Array.isArray(currentSpec?.schemas)) {
     currentSpec.schemas.forEach((entry) => {
-      if (entry && typeof entry.name === 'string' && isPlainObject(entry.schema)) {
-        map.set(entry.name, entry.schema);
+      if (entry && typeof entry.name === 'string') {
+        const slug = typeof entry.slug === 'string' ? entry.slug : entry.name.toLowerCase();
+        map.set(entry.name, slug);
       }
     });
   }
@@ -184,6 +162,11 @@ function isPlainObject(value) {
 
 function deepClone(value) {
   if (value === undefined) return undefined;
+  if (typeof globalThis.structuredClone === 'function') {
+    try {
+      return structuredClone(value);
+    } catch {}
+  }
   try {
     return JSON.parse(JSON.stringify(value));
   } catch {
@@ -220,8 +203,13 @@ function mergeSchemaObjects(base = {}, override = {}) {
   return result;
 }
 
-function resolveSchemaObject(schema, seen = new Set()) {
+function resolveSchemaObject(schema, seen = new Set(), rootRef = null) {
   if (!isPlainObject(schema)) return undefined;
+
+  const initialRef = typeof schema.$ref === 'string' ? schema.$ref : rootRef;
+  if (initialRef && schemaResolutionCache.has(initialRef) && seen.size === 0) {
+    return deepClone(schemaResolutionCache.get(initialRef));
+  }
 
   let workingSchema = deepClone(schema) || {};
 
@@ -229,7 +217,7 @@ function resolveSchemaObject(schema, seen = new Set()) {
     const ref = workingSchema.$ref;
     if (!seen.has(ref)) {
       seen.add(ref);
-      const referenced = resolveSchemaObject(getSchemaFromRef(ref), seen) || {};
+      const referenced = resolveSchemaObject(getSchemaFromRef(ref), seen, ref) || {};
       const localWithoutRef = { ...workingSchema };
       delete localWithoutRef.$ref;
       workingSchema = mergeSchemaObjects(referenced, localWithoutRef);
@@ -272,6 +260,10 @@ function resolveSchemaObject(schema, seen = new Set()) {
   if (!workingSchema.type) {
     if (workingSchema.properties) workingSchema.type = 'object';
     else if (workingSchema.items) workingSchema.type = 'array';
+  }
+
+  if (initialRef) {
+    schemaResolutionCache.set(initialRef, workingSchema);
   }
 
   return workingSchema;

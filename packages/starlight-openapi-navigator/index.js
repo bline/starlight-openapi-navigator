@@ -153,10 +153,137 @@ function createIntegration(resolvedOptions) {
   };
 
   const writeSpecModule = async (spec) => {
-    if (!specModulePath) return;
-    const runtimeSpec = prepareRuntimeSpec(spec);
-    const moduleSource =
-      `export const spec = ${JSON.stringify(runtimeSpec)};\nexport default spec;\n`;
+    if (!specModulePath || !codegenDirPath) return;
+
+    const { manifest, chunks, operationChunkLookup, schemaDefinitions } = createRuntimeSpecArtifacts(spec);
+
+    const specDir = path.dirname(specModulePath);
+    const chunksDir = path.join(specDir, 'chunks');
+    await fs.rm(chunksDir, { recursive: true, force: true });
+    await fs.mkdir(chunksDir, { recursive: true });
+
+    const chunkLoaderEntries = [];
+    const chunkIdsByTag = {};
+    const chunkIdToTag = {};
+    const chunkFileWrites = chunks.map((chunk) => {
+      const chunkFilePath = path.join(chunksDir, chunk.fileName);
+      const chunkImportPath = `./chunks/${chunk.fileName}`;
+      chunkLoaderEntries.push(
+        `${JSON.stringify(chunk.id)}: () => import(${JSON.stringify(chunkImportPath)})`
+      );
+      if (!chunkIdsByTag[chunk.tagSlug]) {
+        chunkIdsByTag[chunk.tagSlug] = [];
+      }
+      chunkIdsByTag[chunk.tagSlug].push(chunk.id);
+      chunkIdToTag[chunk.id] = chunk.tagSlug;
+      const chunkSource =
+        `export const operations = ${JSON.stringify(chunk.operations)};\n` +
+        `export default operations;\n`;
+      return fs.writeFile(chunkFilePath, chunkSource, 'utf8');
+    });
+    await Promise.all(chunkFileWrites);
+
+    const schemaChunkFileName = 'schema-definitions.mjs';
+    const schemaChunkPath = path.join(chunksDir, schemaChunkFileName);
+    const hasSchemaDefinitions =
+      schemaDefinitions && typeof schemaDefinitions === 'object' && Object.keys(schemaDefinitions).length > 0;
+    if (hasSchemaDefinitions) {
+      const schemaSource =
+        `export const schemas = ${JSON.stringify(schemaDefinitions)};\n` +
+        `export default schemas;\n`;
+      await fs.writeFile(schemaChunkPath, schemaSource, 'utf8');
+    } else {
+      await fs.rm(schemaChunkPath, { force: true });
+    }
+
+    const moduleSource = [
+      `const manifest = ${JSON.stringify(manifest)};`,
+      `const chunkLoaders = {`,
+      chunkLoaderEntries.length ? chunkLoaderEntries.map((entry) => `  ${entry},`).join('\n') : '',
+      `};`,
+      `const tagChunkMap = ${JSON.stringify(chunkIdsByTag)};`,
+      `const operationChunkLookup = ${JSON.stringify(operationChunkLookup)};`,
+      `const chunkIdToTag = ${JSON.stringify(chunkIdToTag)};`,
+      `const chunkCache = new Map();`,
+      `const chunkPromises = new Map();`,
+      `const schemaLoader = ${hasSchemaDefinitions ? `() => import("./chunks/${schemaChunkFileName}")` : 'null'};`,
+      `let schemaCache = null;`,
+      `let schemaPromise = null;`,
+      `async function loadChunk(chunkId) {`,
+      `  if (!chunkId) return null;`,
+      `  if (chunkCache.has(chunkId)) return chunkCache.get(chunkId);`,
+      `  if (chunkPromises.has(chunkId)) {`,
+      `    return chunkPromises.get(chunkId);`,
+      `  }`,
+      `  const loader = chunkLoaders[chunkId];`,
+      `  if (!loader) return null;`,
+      `  const promise = loader().then((mod) => mod.operations || mod.default || null);`,
+      `  chunkPromises.set(chunkId, promise);`,
+      `  const resolved = await promise;`,
+      `  chunkCache.set(chunkId, resolved);`,
+      `  chunkPromises.delete(chunkId);`,
+      `  return resolved;`,
+      `}`,
+      `export async function loadTagOperations(tagSlug) {`,
+      `  const chunkIds = tagChunkMap[tagSlug];`,
+      `  if (!chunkIds || (Array.isArray(chunkIds) && chunkIds.length === 0)) {`,
+      `    return null;`,
+      `  }`,
+      `  const ids = Array.isArray(chunkIds) ? chunkIds : [chunkIds];`,
+      `  let hasData = false;`,
+      `  const combined = {};`,
+      `  for (const id of ids) {`,
+      `    const ops = await loadChunk(id);`,
+      `    if (!ops) continue;`,
+      `    hasData = true;`,
+      `    Object.assign(combined, ops);`,
+      `  }`,
+      `  return hasData ? combined : null;`,
+      `}`,
+      `export async function loadOperation(operationSlug, tagSlug) {`,
+      `  if (!operationSlug) return null;`,
+      `  if (tagSlug) {`,
+      `    const chunkIds = tagChunkMap[tagSlug];`,
+      `    if (chunkIds && (!Array.isArray(chunkIds) || chunkIds.length > 0)) {`,
+      `      const ids = Array.isArray(chunkIds) ? chunkIds : [chunkIds];`,
+      `      for (const id of ids) {`,
+      `        const tagOperations = await loadChunk(id);`,
+      `        if (tagOperations && tagOperations[operationSlug]) {`,
+      `          return tagOperations[operationSlug];`,
+      `        }`,
+      `      }`,
+      `    }`,
+      `  }`,
+      `  const chunkId = operationChunkLookup[operationSlug];`,
+      `  if (!chunkId) return null;`,
+      `  const operations = await loadChunk(chunkId);`,
+      `  return operations ? operations[operationSlug] ?? null : null;`,
+      `}`,
+      `export function getOperationPreferredTag(operationSlug) {`,
+      `  const chunkId = operationChunkLookup[operationSlug];`,
+      `  if (!chunkId) return null;`,
+      `  return chunkIdToTag[chunkId] ?? null;`,
+      `}`,
+      `export async function loadSchemaDefinitions() {`,
+      `  if (schemaCache) return schemaCache;`,
+      `  if (!schemaLoader) return {};`,
+      `  if (!schemaPromise) {`,
+      `    schemaPromise = schemaLoader().then((mod) => mod.schemas || mod.default || {});`,
+      `  }`,
+      `  schemaCache = await schemaPromise;`,
+      `  return schemaCache;`,
+      `}`,
+      `export async function loadSchemaDefinition(name) {`,
+      `  if (!name) return undefined;`,
+      `  const definitions = await loadSchemaDefinitions();`,
+      `  return definitions ? definitions[name] : undefined;`,
+      `}`,
+      `export const spec = manifest;`,
+      `export const manifestData = manifest;`,
+      `export default manifest;`,
+      '',
+    ].join('\n');
+
     await fs.writeFile(specModulePath, moduleSource, 'utf8');
   };
 
@@ -889,62 +1016,142 @@ function buildDevProxyTable(spec) {
   return entries;
 }
 
-function prepareRuntimeSpec(spec) {
+const OPERATIONS_PER_CHUNK = 50;
+
+function createRuntimeSpecArtifacts(spec) {
   if (!isPlainObject(spec)) {
     return {
-      info: {},
-      servers: [],
-      stats: { operations: 0, tags: 0, deprecatedOperations: 0, untaggedOperations: 0 },
-      document: {},
-      components: {},
-      tags: [],
-      operations: [],
-      schemas: [],
+      manifest: {
+        info: {},
+        servers: [],
+        stats: { operations: 0, tags: 0, deprecatedOperations: 0, untaggedOperations: 0 },
+        document: {},
+        components: {},
+        tags: [],
+        operations: [],
+        schemas: [],
+      },
+      chunks: [],
+      tagChunkMap: {},
+      operationChunkLookup: {},
     };
   }
 
-  const operations = Array.isArray(spec.operations)
-    ? spec.operations.map(stripOperationForRuntime).filter(Boolean)
-    : [];
-  const operationLookup = new Map(
-    operations.map((operation) => [operation.slug, operation])
-  );
+  const tags = [];
+  const chunks = [];
+  const operationChunkLookup = {};
+  const manifestOperations = [];
+  const seenOperationSlugs = new Set();
+  const schemaDefinitions = {};
+  const trimmedSchemas = [];
 
-  const tags = Array.isArray(spec.tags)
-    ? spec.tags.map((tag) => ({
-        name: tag.name,
-        slug: tag.slug,
-        description: tag.description,
-        externalDocs: tag.externalDocs,
-        isFallback: Boolean(tag.isFallback),
-        stats: tag.stats,
-        metadata: tag.metadata,
-        extensions: tag.extensions,
-        operations: Array.isArray(tag.operations)
-          ? tag.operations
-              .map((operation) => createTagOperationDigest(operation, operationLookup))
-              .filter((operation) => operation && operation.slug && operation.path)
-          : [],
-      }))
-    : [];
+  const addSchemaDefinition = (name, schema) => {
+    if (typeof name !== 'string' || !name) return;
+    if (!isPlainObject(schema)) return;
+    if (!schemaDefinitions[name]) {
+      schemaDefinitions[name] = schema;
+    }
+  };
 
-  const schemas = Array.isArray(spec.schemas)
-    ? spec.schemas.map(stripSchemaForRuntime).filter(Boolean)
-    : [];
+  const sourceTags = Array.isArray(spec.tags) ? spec.tags : [];
+  sourceTags.forEach((tag) => {
+    if (!tag || typeof tag.slug !== 'string') return;
 
-  return {
+    const digestOperations = [];
+    const chunkCandidates = [];
+    const operations = Array.isArray(tag.operations) ? tag.operations : [];
+
+    operations.forEach((operation) => {
+      const digest = createOperationDigest(operation);
+      if (digest) {
+        digestOperations.push(digest);
+        if (!seenOperationSlugs.has(digest.slug)) {
+          seenOperationSlugs.add(digest.slug);
+          manifestOperations.push(digest);
+        }
+      }
+      const stripped = stripOperationForChunk(operation);
+      if (stripped && stripped.slug) {
+        chunkCandidates.push(stripped);
+      }
+    });
+
+    tags.push({
+      name: tag.name,
+      slug: tag.slug,
+      description: tag.description,
+      externalDocs: tag.externalDocs,
+      isFallback: Boolean(tag.isFallback),
+      stats: tag.stats,
+      metadata: tag.metadata,
+      extensions: tag.extensions,
+      operations: digestOperations,
+    });
+
+    if (chunkCandidates.length > 0) {
+      for (let start = 0; start < chunkCandidates.length; start += OPERATIONS_PER_CHUNK) {
+        const slice = chunkCandidates.slice(start, start + OPERATIONS_PER_CHUNK);
+        const chunkIndex = Math.floor(start / OPERATIONS_PER_CHUNK);
+        const chunkId = createChunkId(tag.slug, chunkIndex);
+        const fileName = buildChunkFileName(chunkId);
+        const operationsMap = {};
+        slice.forEach((entry) => {
+          operationsMap[entry.slug] = entry;
+          if (!operationChunkLookup[entry.slug]) {
+            operationChunkLookup[entry.slug] = chunkId;
+          }
+        });
+        chunks.push({
+          id: chunkId,
+          tagSlug: tag.slug,
+          fileName,
+          operations: operationsMap,
+        });
+      }
+    }
+  });
+
+  if (Array.isArray(spec.schemas)) {
+    spec.schemas.forEach((entry) => {
+      if (!entry || typeof entry.name !== 'string') return;
+      trimmedSchemas.push({
+        name: entry.name,
+        slug: entry.slug,
+        description: entry.description,
+        extensions: entry.extensions,
+      });
+      if (isPlainObject(entry.schema)) {
+        addSchemaDefinition(entry.name, entry.schema);
+      }
+    });
+  }
+
+  const documentSchemas = spec?.document?.components?.schemas;
+  if (documentSchemas && typeof documentSchemas === 'object') {
+    Object.entries(documentSchemas).forEach(([name, schema]) => {
+      addSchemaDefinition(name, schema);
+    });
+  }
+
+  const manifest = {
     info: isPlainObject(spec.info) ? spec.info : {},
     servers: Array.isArray(spec.servers) ? spec.servers : [],
     stats: isPlainObject(spec.stats) ? spec.stats : {},
     document: buildRuntimeDocument(spec.document),
-    components: buildRuntimeComponents(spec.components),
     tags,
-    operations,
-    schemas,
+    operations: manifestOperations,
+    schemas: trimmedSchemas,
+  };
+
+  return {
+    manifest,
+    chunks,
+    operationChunkLookup,
+    schemaDefinitions,
   };
 }
 
-function stripOperationForRuntime(operation) {
+function stripOperationForChunk(operation) {
   if (!isPlainObject(operation)) return null;
   const {
     path,
@@ -1004,20 +1211,31 @@ function stripSchemaForRuntime(schemaEntry) {
   };
 }
 
-function createTagOperationDigest(operation, operationLookup) {
-  if (!operation) return null;
-  if (typeof operation === 'object' && typeof operation.slug === 'string') {
-    const resolved = operationLookup.get(operation.slug);
-    const source = resolved || operation;
-    return {
-      slug: source.slug,
-      method: source.method ? String(source.method).toUpperCase() : '',
-      path: source.path,
-      summary: source.summary,
-      deprecated: Boolean(source.deprecated),
-    };
-  }
-  return null;
+function createOperationDigest(operation) {
+  if (!isPlainObject(operation)) return null;
+  if (typeof operation.slug !== 'string') return null;
+  const method = typeof operation.method === 'string' ? operation.method.toUpperCase() : '';
+  const path = typeof operation.path === 'string' ? operation.path : '';
+  const summary = typeof operation.summary === 'string' ? operation.summary : '';
+  if (!path && !summary) return null;
+  return {
+    slug: operation.slug,
+    method,
+    path,
+    summary,
+    deprecated: Boolean(operation.deprecated),
+  };
+}
+
+function createChunkId(tagSlug, chunkIndex = 0) {
+  const base = typeof tagSlug === 'string' && tagSlug.length ? tagSlug : 'untagged';
+  return `tag:${base}:chunk:${chunkIndex}`;
+}
+
+function buildChunkFileName(chunkId) {
+  const safe = chunkId.replace(/[^a-zA-Z0-9:_-]/g, '-').replace(/:+/g, '-');
+  const collapsed = safe.replace(/-+/g, '-').replace(/^-|-$/g, '');
+  return `operations-${collapsed || 'chunk'}.mjs`;
 }
 
 function buildRuntimeDocument(document) {
@@ -1034,23 +1252,6 @@ function buildRuntimeDocument(document) {
     result.components = {
       securitySchemes: document.components.securitySchemes,
     };
-  }
-
-  return result;
-}
-
-function buildRuntimeComponents(components) {
-  if (!isPlainObject(components)) return {};
-
-  /** @type {Record<string, unknown>} */
-  const result = {};
-
-  if (isPlainObject(components.schemas)) {
-    result.schemas = components.schemas;
-  }
-
-  if (isPlainObject(components.securitySchemes)) {
-    result.securitySchemes = components.securitySchemes;
   }
 
   return result;
