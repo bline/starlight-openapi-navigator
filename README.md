@@ -71,6 +71,20 @@ During `astro dev`, the spec file is watched for changes and the docs are regene
 
 Navigator can bootstrap from any publicly reachable `http://` or `https://` OpenAPI document. Set `specPath` to the remote URL and the integration will fetch it at dev/build startup before generating pages. Because there’s no local file to watch, spec hot-reload is unavailable—reload the dev server (or restart the build) after remote changes.
 
+## Roadmap: Enterprise-Scale Specs
+
+Stress-testing with Stripe’s OpenAPI (≈9 MB YAML, 500+ operations) highlighted two remaining bottlenecks during `astro build`:
+
+- The generated `spec-data` module still holds the entire normalized spec in one bundle, so Node allocates the full object plus a huge JSON string while serializing.
+- Each operation page pulls its payload from that shared module at render time, meaning the whole document stays resident while Vite compiles every route.
+
+We’re planning to ship both of the following improvements to keep builds stable for enterprise-sized specs:
+
+1. **Chunked runtime loader** – Split the generated payload into a compact manifest (info, stats, tag/operation digests) plus per-tag chunks that `import()` lazily. Operation pages read only the chunk they need, keeping the base module tiny and capping peak heap usage.
+2. **Pre-rendered operation payloads** – During page generation, serialize each operation’s resolved data directly into the `.astro` file (similar to how schema pages already inline their data). This removes the need to materialize the full spec at runtime while preserving Starlight’s static HTML for search indexing.
+
+Both approaches maintain compatibility with Starlight’s built-in search because the final HTML still contains the full operation content—there are no client-only fetches.
+
 ## Generated Pages
 
 - **Overview** – Summarizes API metadata, tags, servers, and quick links.

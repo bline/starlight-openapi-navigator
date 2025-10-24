@@ -98,6 +98,10 @@ A week-long push to get **Starlight OpenAPI Navigator** ready for OSS release.
 
 * **P0** ☐ Lazy render schema explorer panels
   **AC:** Only expanded panel mounts; initial load OK for 1k+ components.
+* **P0** ☐ Chunk runtime spec payload
+  **AC:** Integration writes manifest + per-tag (or chunked) operation modules; Astro pages import only needed chunk so build-time heap stays stable on Stripe-sized specs.
+* **P0** ☐ Pre-render operation payloads into pages
+  **AC:** Generator injects resolved operation data into `.astro` files; runtime no longer loads whole spec to render tabs/search, preserving search indexing.
 * **P1** ☐ Virtualized lists for huge operations/components
   **AC:** Sidebar & explorer stay fluid at scale.
 * **P1** ☐ Per-page code-splitting of heavy UI chunks
