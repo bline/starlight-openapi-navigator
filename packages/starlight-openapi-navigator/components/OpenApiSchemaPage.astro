@@ -1,4 +1,5 @@
 ---
+import '../runtime/theme.css';
 import { Icon } from '@astrojs/starlight/components';
 import AnchorHeading from '@astrojs/starlight/components/AnchorHeading.astro';
 
@@ -56,7 +57,12 @@ slugMap.set(schemaName, schemaSlug);
         data-schema-toggle
         aria-pressed="false"
       >
-        <Icon name="right-caret" size="1rem" aria-hidden="true" data-schema-toggle-icon />
+        <Icon
+          name="right-caret"
+          size="1rem"
+          aria-hidden="true"
+          data-schema-toggle-icon
+        />
         <span data-schema-toggle-label>Expand All</span>
       </button>
     </div>
@@ -126,6 +132,16 @@ slugMap.set(schemaName, schemaSlug);
   outline-offset: 2px;
 }
 
+.schema-page__toggle [data-schema-toggle-icon] {
+  display: inline-flex;
+  transition: transform 160ms ease;
+  transform-origin: center;
+}
+
+.schema-page__toggle[data-state='expanded'] [data-schema-toggle-icon] {
+  transform: rotate(90deg);
+}
+
 .schema-page__empty {
   margin: 0;
   font-style: italic;
@@ -143,7 +159,6 @@ slugMap.set(schemaName, schemaSlug);
       return;
     }
 
-    const icon = toggle.querySelector('[data-schema-toggle-icon]');
     const label = toggle.querySelector('[data-schema-toggle-label]');
 
     const getDetails = () => Array.from(tree.querySelectorAll('details.schema-node__details'));
@@ -153,9 +168,6 @@ slugMap.set(schemaName, schemaSlug);
       toggle.setAttribute('aria-pressed', expanded ? 'true' : 'false');
       if (label instanceof HTMLElement) {
         label.textContent = expanded ? 'Collapse All' : 'Expand All';
-      }
-      if (icon instanceof HTMLElement) {
-        icon.setAttribute('name', expanded ? 'down-caret' : 'right-caret');
       }
     };
 

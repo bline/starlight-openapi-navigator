@@ -1,0 +1,48 @@
+/* Fallback palette bridging Obsidian vars to Starlight defaults */
+:root {
+  --color-primary: var(--sl-color-accent, #4c82fb);
+  --color-accent: var(--color-primary);
+  --color-on-accent: var(--sl-color-text-invert, #0f172a);
+  --color-bg: var(--sl-color-bg, #0f1115);
+  --color-bg-muted: color-mix(in srgb, var(--color-bg) 92%, var(--sl-color-white, #ffffff) 8%);
+  --color-bg-selected: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg) 86%);
+  --color-bg-subtle: color-mix(in srgb, var(--color-primary) 10%, var(--color-bg) 90%);
+  --color-border: color-mix(
+    in srgb,
+    var(--sl-color-hairline, var(--sl-color-gray-5, #2f353d)) 90%,
+    var(--color-bg) 10%
+  );
+  --color-muted-fg: color-mix(
+    in srgb,
+    var(--sl-color-text, #cbd5f5) 70%,
+    var(--sl-color-white, #ffffff) 30%
+  );
+  --color-green: var(--sl-color-green, #2f9e44);
+  --color-blue: var(--sl-color-blue, #1c7ed6);
+  --color-red: var(--sl-color-red, #e03131);
+  --color-yellow: color-mix(in srgb, var(--sl-color-orange, #f08c00) 75%, var(--sl-color-white, #ffffff) 25%);
+  --color-teal: color-mix(in srgb, var(--sl-color-green, #2f9e44) 55%, var(--sl-color-blue, #1c7ed6) 45%);
+  --color-orange: var(--sl-color-orange, #f08c00);
+  --color-danger: var(--color-red);
+  --color-warning: var(--color-orange);
+  --color-warning-border: color-mix(in srgb, var(--color-warning) 45%, var(--color-bg) 55%);
+  --color-warning-fg: color-mix(in srgb, var(--color-warning) 40%, var(--sl-color-white, #ffffff) 60%);
+}
+
+:root[data-theme='light'] {
+  --color-muted-fg: color-mix(
+    in srgb,
+    var(--sl-color-text, #1f2937) 70%,
+    var(--sl-color-gray-5, #6b7280) 30%
+  );
+  --color-bg-muted: color-mix(in srgb, var(--color-bg) 95%, var(--sl-color-gray-7, #f5f7fa) 5%);
+  --color-bg-selected: color-mix(in srgb, var(--color-primary) 12%, var(--color-bg) 88%);
+  --color-bg-subtle: color-mix(in srgb, var(--color-primary) 8%, var(--color-bg) 92%);
+  --color-border: color-mix(
+    in srgb,
+    var(--sl-color-hairline-light, var(--sl-color-gray-6, #d1d5db)) 85%,
+    var(--color-bg) 15%
+  );
+  --color-on-accent: var(--sl-color-white, #ffffff);
+  --color-warning-fg: color-mix(in srgb, var(--color-warning) 35%, var(--sl-color-white, #ffffff) 65%);
+}

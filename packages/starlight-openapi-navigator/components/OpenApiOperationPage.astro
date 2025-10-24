@@ -1,6 +1,7 @@
 ---
 import spec from 'virtual:starlight-openapi-navigator/spec-data';
 import generatedConfig from 'virtual:starlight-openapi-navigator/config';
+import '../runtime/theme.css';
 import { Tabs, TabItem, Code, Icon } from '@astrojs/starlight/components';
 import AnchorHeading from '@astrojs/starlight/components/AnchorHeading.astro';
 
@@ -37,15 +38,35 @@ const proxyTable = Array.isArray(generatedConfig?.devProxyTable)
   : [];
 const proxyLookup = buildProxyLookup(proxyTable);
 const SUPPORTED_PRIMITIVE_TYPES = new Set(['string', 'number', 'integer', 'boolean']);
+const operationLookup = new Map(
+  Array.isArray(spec.operations)
+    ? spec.operations
+        .filter((operation) => operation && typeof operation.slug === 'string')
+        .map((operation) => [operation.slug, operation])
+    : []
+);
 
 const selectedOperation = (() => {
   if (!operationSlug) return null;
-  const taggedOperations = Array.isArray(tag?.operations) ? tag.operations : [];
-  const fallbackOperations = Array.isArray(spec.operations) ? spec.operations : [];
-  const operation = taggedOperations.find((entry) => entry.slug === operationSlug)
-    || fallbackOperations.find((entry) => entry.slug === operationSlug);
-  if (!operation) return null;
-  return prepareOperation(operation);
+  const direct = operationLookup.get(operationSlug);
+  if (direct) return prepareOperation(direct);
+
+  if (Array.isArray(tag?.operations)) {
+    for (const entry of tag.operations) {
+      const candidate = operationLookup.get(entry?.slug);
+      if (candidate) {
+        return prepareOperation(candidate);
+      }
+    }
+  }
+
+  const iterator = operationLookup.values();
+  const first = iterator.next();
+  if (!first.done && first.value) {
+    return prepareOperation(first.value);
+  }
+
+  return null;
 })();
 
 const apiKeyFieldId = selectedOperation ? `tryit-api-key-${selectedOperation.slug}` : 'tryit-api-key';

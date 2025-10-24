@@ -154,8 +154,9 @@ function createIntegration(resolvedOptions) {
 
   const writeSpecModule = async (spec) => {
     if (!specModulePath) return;
+    const runtimeSpec = prepareRuntimeSpec(spec);
     const moduleSource =
-      `export const spec = ${JSON.stringify(spec)};\nexport default spec;\n`;
+      `export const spec = ${JSON.stringify(runtimeSpec)};\nexport default spec;\n`;
     await fs.writeFile(specModulePath, moduleSource, 'utf8');
   };
 
@@ -886,6 +887,173 @@ function buildDevProxyTable(spec) {
   });
 
   return entries;
+}
+
+function prepareRuntimeSpec(spec) {
+  if (!isPlainObject(spec)) {
+    return {
+      info: {},
+      servers: [],
+      stats: { operations: 0, tags: 0, deprecatedOperations: 0, untaggedOperations: 0 },
+      document: {},
+      components: {},
+      tags: [],
+      operations: [],
+      schemas: [],
+    };
+  }
+
+  const operations = Array.isArray(spec.operations)
+    ? spec.operations.map(stripOperationForRuntime).filter(Boolean)
+    : [];
+  const operationLookup = new Map(
+    operations.map((operation) => [operation.slug, operation])
+  );
+
+  const tags = Array.isArray(spec.tags)
+    ? spec.tags.map((tag) => ({
+        name: tag.name,
+        slug: tag.slug,
+        description: tag.description,
+        externalDocs: tag.externalDocs,
+        isFallback: Boolean(tag.isFallback),
+        stats: tag.stats,
+        metadata: tag.metadata,
+        extensions: tag.extensions,
+        operations: Array.isArray(tag.operations)
+          ? tag.operations
+              .map((operation) => createTagOperationDigest(operation, operationLookup))
+              .filter((operation) => operation && operation.slug && operation.path)
+          : [],
+      }))
+    : [];
+
+  const schemas = Array.isArray(spec.schemas)
+    ? spec.schemas.map(stripSchemaForRuntime).filter(Boolean)
+    : [];
+
+  return {
+    info: isPlainObject(spec.info) ? spec.info : {},
+    servers: Array.isArray(spec.servers) ? spec.servers : [],
+    stats: isPlainObject(spec.stats) ? spec.stats : {},
+    document: buildRuntimeDocument(spec.document),
+    components: buildRuntimeComponents(spec.components),
+    tags,
+    operations,
+    schemas,
+  };
+}
+
+function stripOperationForRuntime(operation) {
+  if (!isPlainObject(operation)) return null;
+  const {
+    path,
+    method,
+    operationId,
+    slug,
+    summary,
+    description,
+    deprecated,
+    tags,
+    parameters,
+    requestBody,
+    responses,
+    security,
+    servers,
+    codeSampleGroups,
+    requestBodyExamples,
+    responseExamples,
+    extensions,
+  } = operation;
+
+  const normalized = {
+    path,
+    method,
+    operationId,
+    slug,
+    summary,
+    description,
+    deprecated,
+    tags,
+    parameters,
+    requestBody,
+    responses,
+    security,
+    servers,
+    codeSampleGroups,
+    requestBodyExamples,
+    responseExamples,
+  };
+
+  if (extensions && Object.keys(extensions).length) {
+    normalized.extensions = extensions;
+  }
+
+  return normalized;
+}
+
+function stripSchemaForRuntime(schemaEntry) {
+  if (!isPlainObject(schemaEntry)) return null;
+  const { name, slug, schema, description, extensions } = schemaEntry;
+  return {
+    name,
+    slug,
+    schema,
+    description,
+    extensions,
+  };
+}
+
+function createTagOperationDigest(operation, operationLookup) {
+  if (!operation) return null;
+  if (typeof operation === 'object' && typeof operation.slug === 'string') {
+    const resolved = operationLookup.get(operation.slug);
+    const source = resolved || operation;
+    return {
+      slug: source.slug,
+      method: source.method ? String(source.method).toUpperCase() : '',
+      path: source.path,
+      summary: source.summary,
+      deprecated: Boolean(source.deprecated),
+    };
+  }
+  return null;
+}
+
+function buildRuntimeDocument(document) {
+  if (!isPlainObject(document)) return {};
+
+  /** @type {Record<string, unknown>} */
+  const result = {};
+
+  if (Array.isArray(document.security)) {
+    result.security = document.security;
+  }
+
+  if (isPlainObject(document.components) && isPlainObject(document.components.securitySchemes)) {
+    result.components = {
+      securitySchemes: document.components.securitySchemes,
+    };
+  }
+
+  return result;
+}
+
+function buildRuntimeComponents(components) {
+  if (!isPlainObject(components)) return {};
+
+  /** @type {Record<string, unknown>} */
+  const result = {};
+
+  if (isPlainObject(components.schemas)) {
+    result.schemas = components.schemas;
+  }
+
+  if (isPlainObject(components.securitySchemes)) {
+    result.securitySchemes = components.securitySchemes;
+  }
+
+  return result;
 }
 
 function parseServerUrl(url) {
