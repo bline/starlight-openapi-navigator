@@ -1,11 +1,10 @@
 ---
-import spec, { loadOperation, getOperationPreferredTag, loadSchemaDefinitions } from 'virtual:starlight-openapi-navigator/spec-data';
+import spec, { loadOperation, getOperationPreferredTag } from 'virtual:starlight-openapi-navigator/spec-data';
 import generatedConfig from 'virtual:starlight-openapi-navigator/config';
 import '../runtime/theme.css';
 import { Tabs, TabItem, Code, Icon } from '@astrojs/starlight/components';
 import AnchorHeading from '@astrojs/starlight/components/AnchorHeading.astro';
 
-import SchemaForm from './OpenApiSchemaForm.astro';
 import OpenApiEndpointSearch from './OpenApiEndpointSearch.astro';
 
 import { DEFAULT_BASE_SLUG } from '../runtime/config.js';
@@ -27,14 +26,7 @@ const resolvedEndpointUI =
 const operationsIndex = buildOperationIndex(spec, configuredSlug);
 const showSearch = resolvedEndpointUI === 'search' && operationsIndex.length > 0;
 
-const schemaDefinitions = await loadSchemaDefinitions();
-const schemaDefinitionMap = buildSchemaDefinitionMap(schemaDefinitions);
 const schemaSlugMap = buildSchemaSlugMap(spec);
-const schemaResolutionCache = new Map();
-const proxyTable = Array.isArray(generatedConfig?.devProxyTable)
-  ? generatedConfig.devProxyTable
-  : [];
-const proxyLookup = buildProxyLookup(proxyTable);
 const SUPPORTED_PRIMITIVE_TYPES = new Set(['string', 'number', 'integer', 'boolean']);
 const resolvedTagSlug = typeof tagSlug === 'string' && tagSlug.length ? tagSlug : tag?.slug;
 let selectedOperation = null;
@@ -51,7 +43,6 @@ if (operationSlug) {
   }
 }
 
-const apiKeyFieldId = selectedOperation ? `tryit-api-key-${selectedOperation.slug}` : 'tryit-api-key';
 const panelIds = selectedOperation
   ? {
       parameters: `${selectedOperation.slug}-parameters`,
@@ -70,13 +61,8 @@ const panelStorageKeys = selectedOperation
     }
   : {};
 
-const operationServers = selectedOperation ? getOperationServers(selectedOperation, spec) : [];
-const parameterGroups = selectedOperation ? buildParameterGroups(selectedOperation) : { path: [], query: [], header: [] };
-const pathParameters = parameterGroups.path;
-const queryParameters = parameterGroups.query;
-const headerParameters = parameterGroups.header;
 const tryItHref = selectedOperation
-  ? `/${configuredSlug}/${(tag?.slug || resolvedTagSlug)}/${selectedOperation.slug}/try/`
+  ? `/${configuredSlug}/try/?operation=${encodeURIComponent(selectedOperation.slug)}${tag?.slug || resolvedTagSlug ? `&tag=${encodeURIComponent(tag?.slug || resolvedTagSlug)}` : ''}`
   : '';
 
 function prepareOperation(operation) {
@@ -130,287 +116,6 @@ function prepareOperation(operation) {
   };
 }
 
-function buildSchemaDefinitionMap(definitions) {
-  /** @type {Map<string, Record<string, unknown>>} */
-  const map = new Map();
-  if (definitions && typeof definitions === 'object') {
-    Object.entries(definitions).forEach(([name, schema]) => {
-      if (isPlainObject(schema)) {
-        map.set(name, schema);
-      }
-    });
-  }
-  return map;
-}
-
-function buildSchemaSlugMap(currentSpec) {
-  const map = new Map();
-  if (Array.isArray(currentSpec?.schemas)) {
-    currentSpec.schemas.forEach((entry) => {
-      if (entry && typeof entry.name === 'string') {
-        const slug = typeof entry.slug === 'string' ? entry.slug : entry.name.toLowerCase();
-        map.set(entry.name, slug);
-      }
-    });
-  }
-  return map;
-}
-
-function isPlainObject(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function deepClone(value) {
-  if (value === undefined) return undefined;
-  if (typeof globalThis.structuredClone === 'function') {
-    try {
-      return structuredClone(value);
-    } catch {}
-  }
-  try {
-    return JSON.parse(JSON.stringify(value));
-  } catch {
-    return undefined;
-  }
-}
-
-function decodeRefName(pointer) {
-  const match = typeof pointer === 'string' ? pointer.match(/#\/components\/schemas\/(.+)$/) : null;
-  if (!match) return undefined;
-  return match[1]?.replace(/~1/g, '/').replace(/~0/g, '~');
-}
-
-function getSchemaFromRef(ref) {
-  const name = decodeRefName(ref);
-  if (!name) return undefined;
-  const definition = schemaDefinitionMap.get(name);
-  return definition ? deepClone(definition) : undefined;
-}
-
-function mergeSchemaObjects(base = {}, override = {}) {
-  const result = { ...deepClone(base), ...deepClone(override) };
-  const baseProps = isPlainObject(base.properties) ? base.properties : {};
-  const overrideProps = isPlainObject(override.properties) ? override.properties : {};
-  if (Object.keys(baseProps).length || Object.keys(overrideProps).length) {
-    result.properties = { ...deepClone(baseProps), ...deepClone(overrideProps) };
-  }
-  const baseRequired = Array.isArray(base.required) ? base.required : [];
-  const overrideRequired = Array.isArray(override.required) ? override.required : [];
-  if (baseRequired.length || overrideRequired.length) {
-    result.required = Array.from(new Set([...baseRequired, ...overrideRequired]));
-  }
-  if (base.allOf || override.allOf) delete result.allOf;
-  return result;
-}
-
-function resolveSchemaObject(schema, seen = new Set(), rootRef = null) {
-  if (!isPlainObject(schema)) return undefined;
-
-  const initialRef = typeof schema.$ref === 'string' ? schema.$ref : rootRef;
-  if (initialRef && schemaResolutionCache.has(initialRef) && seen.size === 0) {
-    return deepClone(schemaResolutionCache.get(initialRef));
-  }
-
-  let workingSchema = deepClone(schema) || {};
-
-  if (workingSchema.$ref) {
-    const ref = workingSchema.$ref;
-    if (!seen.has(ref)) {
-      seen.add(ref);
-      const referenced = resolveSchemaObject(getSchemaFromRef(ref), seen, ref) || {};
-      const localWithoutRef = { ...workingSchema };
-      delete localWithoutRef.$ref;
-      workingSchema = mergeSchemaObjects(referenced, localWithoutRef);
-    } else {
-      const clone = { ...workingSchema };
-      delete clone.$ref;
-      workingSchema = clone;
-    }
-  }
-
-  if (Array.isArray(workingSchema.allOf)) {
-    workingSchema.allOf.forEach((entry) => {
-      const resolved = resolveSchemaObject(entry, new Set(seen));
-      if (resolved) {
-        workingSchema = mergeSchemaObjects(workingSchema, resolved);
-      }
-    });
-    delete workingSchema.allOf;
-  }
-
-  if (isPlainObject(workingSchema.properties)) {
-    const resolvedProps = {};
-    Object.entries(workingSchema.properties).forEach(([key, value]) => {
-      resolvedProps[key] = resolveSchemaObject(value, new Set(seen)) || {};
-    });
-    workingSchema.properties = resolvedProps;
-  }
-
-  if (isPlainObject(workingSchema.items)) {
-    workingSchema.items = resolveSchemaObject(workingSchema.items, new Set(seen)) || {};
-  }
-
-  if (isPlainObject(workingSchema.additionalProperties)) {
-    workingSchema.additionalProperties = resolveSchemaObject(
-      workingSchema.additionalProperties,
-      new Set(seen)
-    ) || {};
-  }
-
-  if (!workingSchema.type) {
-    if (workingSchema.properties) workingSchema.type = 'object';
-    else if (workingSchema.items) workingSchema.type = 'array';
-  }
-
-  if (initialRef) {
-    schemaResolutionCache.set(initialRef, workingSchema);
-  }
-
-  return workingSchema;
-}
-
-function inferSchemaType(schema) {
-  if (!schema || typeof schema !== 'object') return '';
-  if (Array.isArray(schema.type)) return schema.type[0];
-  if (schema.type) return schema.type;
-  if (schema.properties) return 'object';
-  if (schema.items) return 'array';
-  if (Array.isArray(schema.enum) && schema.enum.length) {
-    const sample = schema.enum[0];
-    if (typeof sample === 'number') return Number.isInteger(sample) ? 'integer' : 'number';
-    if (typeof sample === 'boolean') return 'boolean';
-    if (typeof sample === 'string') return 'string';
-  }
-  return '';
-}
-
-function buildSchemaFormTree(schema) {
-  const resolved = resolveSchemaObject(schema);
-  if (!resolved || inferSchemaType(resolved) !== 'object') return null;
-  return createSchemaNode({
-    name: null,
-    schema: resolved,
-    path: [],
-    required: false,
-  });
-}
-
-function createSchemaNode({ name, schema, path, required }) {
-  if (!schema || typeof schema !== 'object') return null;
-
-  const type = inferSchemaType(schema);
-
-  if (schema.oneOf || schema.anyOf || schema.not) {
-    return {
-      kind: 'unsupported',
-      name,
-      path,
-      required,
-      message: 'Polymorphic schemas (oneOf/anyOf/not) are not yet supported in form mode.',
-    };
-  }
-
-  if (schema.additionalProperties) {
-    return {
-      kind: 'unsupported',
-      name,
-      path,
-      required,
-      message: 'Dynamic key objects (additionalProperties) are not supported. Use raw JSON mode.',
-    };
-  }
-
-  if (type === 'object') {
-    const properties = isPlainObject(schema.properties) ? schema.properties : {};
-    const requiredSet = new Set(Array.isArray(schema.required) ? schema.required : []);
-    const children = Object.entries(properties)
-      .map(([propName, propSchema]) =>
-        createSchemaNode({
-          name: propName,
-          schema: propSchema,
-          path: [...path, propName],
-          required: requiredSet.has(propName),
-        })
-      )
-      .filter(Boolean);
-
-    return {
-      kind: 'object',
-      name,
-      path,
-      required,
-      description: typeof schema.description === 'string' ? schema.description : undefined,
-      children,
-    };
-  }
-
-  if (type === 'array') {
-    const itemSchema = schema.items ? resolveSchemaObject(schema.items) : undefined;
-    const itemType = inferSchemaType(itemSchema);
-    if (SUPPORTED_PRIMITIVE_TYPES.has(itemType)) {
-      return {
-        kind: 'array',
-        name,
-        path,
-        required,
-        description: typeof schema.description === 'string' ? schema.description : undefined,
-        itemType,
-        enum: Array.isArray(itemSchema?.enum) ? itemSchema.enum : undefined,
-        example: itemSchema?.example ?? schema.example,
-      };
-    }
-    return {
-      kind: 'unsupported',
-      name,
-      path,
-      required,
-      message: 'Only arrays of primitive values are supported in form mode. Use raw JSON to set complex arrays.',
-    };
-  }
-
-  if (SUPPORTED_PRIMITIVE_TYPES.has(type)) {
-    return {
-      kind: 'primitive',
-      type,
-      name,
-      path,
-      required,
-      description: typeof schema.description === 'string' ? schema.description : undefined,
-      format: typeof schema.format === 'string' ? schema.format : undefined,
-      enum: Array.isArray(schema.enum) ? schema.enum : undefined,
-      default: schema.default,
-      example: schema.example,
-      pattern: schema.pattern,
-      minimum: schema.minimum,
-      maximum: schema.maximum,
-      minLength: schema.minLength,
-      maxLength: schema.maxLength,
-    };
-  }
-
-  return {
-    kind: 'unsupported',
-    name,
-    path,
-    required,
-    message: 'This field type is not supported in the generated form. Use raw JSON mode to edit it.',
-  };
-}
-
-function collectUnsupportedMessages(node, messages = []) {
-  if (!node) return messages;
-  if (node.kind === 'unsupported' && node.message) {
-    messages.push({
-      path: node.path.join('.') || node.name || 'field',
-      message: node.message,
-    });
-  }
-  if (node.kind === 'object' && Array.isArray(node.children)) {
-    node.children.forEach((child) => collectUnsupportedMessages(child, messages));
-  }
-  return messages;
-}
-
 const formatMethod = (method) => method?.toUpperCase?.() ?? '';
 const formatParamType = (param) => {
   const schema = param?.schema || {};
@@ -455,235 +160,6 @@ function groupResponseExamples(examples) {
   return map;
 }
 
-function getOperationServers(operation, spec) {
-  const opServers = Array.isArray(operation?.servers) ? operation.servers : [];
-  const specServers = Array.isArray(spec?.servers) ? spec.servers : [];
-  let servers = opServers.length ? opServers : specServers;
-
-  servers = Array.isArray(servers)
-    ? servers
-        .filter((server) => server && typeof server.url === 'string' && server.url.trim().length)
-        .map((server) => ({ ...server }))
-    : [];
-
-  if (import.meta.env.DEV && proxyLookup.size) {
-    const augmented = [];
-    servers.forEach((server) => {
-      const normalized = normalizeServerUrl(server.url);
-      const proxyEntry = proxyLookup.get(normalized);
-      if (proxyEntry) {
-        augmented.push({
-          url: proxyEntry.contextPath,
-          description: server.description
-            ? `${stripHtml(server.description)} (proxied)`
-            : `Local proxy → ${proxyEntry.target}${proxyEntry.rewritePath ?? ''}`,
-          originalUrl: server.url,
-          isProxy: true,
-        });
-      }
-      augmented.push(server);
-    });
-    servers = augmented;
-  }
-
-  return servers.map((server) => ({
-    url: server.url || '',
-    description: stripHtml(server.description),
-    originalUrl: server.originalUrl || server.url || '',
-    isProxy: Boolean(server.isProxy),
-  }));
-}
-
-function buildSecurityDefinitions(operation) {
-  const specSecuritySchemes = spec?.document?.components?.securitySchemes || {};
-  const requirements = Array.isArray(operation?.security) && operation.security.length
-    ? operation.security
-    : Array.isArray(spec?.document?.security) && spec.document.security.length
-      ? spec.document.security
-      : [];
-
-  const seen = new Set();
-  const resolved = [];
-
-  requirements.forEach((requirement) => {
-    if (!requirement || typeof requirement !== 'object') return;
-    Object.entries(requirement).forEach(([schemeKey, value]) => {
-      if (!schemeKey || seen.has(schemeKey)) return;
-      const scheme = specSecuritySchemes[schemeKey];
-      if (!scheme) return;
-      resolved.push({
-        key: schemeKey,
-        type: scheme.type,
-        name: scheme.name,
-        in: scheme.in,
-        scheme: scheme.scheme,
-        bearerFormat: scheme.bearerFormat,
-        description: stripHtml(scheme.description),
-        scopes: Array.isArray(value) ? value : [],
-      });
-      seen.add(schemeKey);
-    });
-  });
-
-  return resolved;
-}
-
-function buildBodyOptions(operation) {
-  const content = operation?.requestBody?.content;
-  if (!content || typeof content !== 'object') return [];
-  const entries = Object.entries(content).filter(([type]) => typeof type === 'string' && type.length);
-  if (!entries.length) return [];
-
-  const examplesByType = new Map();
-  (operation.requestBodyExamples || []).forEach((group) => {
-    const example = group?.examples?.find((entry) => entry?.value !== undefined)?.value;
-    if (example !== undefined) examplesByType.set(group.contentType, example);
-  });
-
-  return entries.map(([contentType, media]) => {
-    const resolvedSchema = media?.schema ? resolveSchemaObject(media.schema) : undefined;
-    const schemaType = inferSchemaType(resolvedSchema) || media?.schema?.type || '';
-    const formTree = resolvedSchema ? buildSchemaFormTree(resolvedSchema) : null;
-    const formFields = formTree?.kind === 'object' ? formTree.children || [] : [];
-    const supportsForm = Boolean(formFields.find((field) => field?.kind !== 'unsupported'));
-    const warnings = formTree ? collectUnsupportedMessages(formTree) : [];
-
-    const rawExample = examplesByType.get(contentType);
-    const parsedExample = tryParseJsonExample(rawExample);
-    const exampleText = parsedExample !== undefined
-      ? JSON.stringify(parsedExample, null, 2)
-      : formatExampleValue(rawExample);
-
-    return {
-      contentType,
-      schemaType,
-      example: exampleText,
-      exampleValue: parsedExample,
-      required: Boolean(operation?.requestBody?.required),
-      formTree,
-      formFields,
-      supportsForm,
-      schemaWarnings: warnings,
-    };
-  });
-}
-
-function buildTryItConfig(operation, servers, bodyOptions) {
-  return {
-    slug: operation.slug,
-    method: (operation.method || '').toUpperCase(),
-    path: operation.path || '',
-    servers: servers
-      .map((server) => ({
-        url: server?.url || '',
-        description: stripHtml(server?.description),
-        originalUrl: server?.originalUrl || '',
-        isProxy: Boolean(server?.isProxy),
-      }))
-      .filter((server) => server.url),
-    parameters: (operation.parameters || []).map((param) => ({
-      name: param?.name,
-      location: param?.in,
-      required: Boolean(param?.required),
-      description: stripHtml(param?.description),
-      example: formatExampleValue(getParameterExample(param)),
-    })),
-    body: bodyOptions.map((option) => ({
-      contentType: option.contentType,
-      schemaType: option.schemaType,
-      example: option.example,
-      required: option.required,
-    })),
-    security: buildSecurityDefinitions(operation),
-  };
-}
-
-function buildParameterGroups(operation) {
-  const parameters = Array.isArray(operation?.parameters) ? operation.parameters : [];
-  const enhanced = parameters.map((param) => ({
-    ...param,
-    exampleValue: formatExampleValue(getParameterExample(param)),
-  }));
-  return {
-    path: enhanced.filter((param) => param.in === 'path'),
-    query: enhanced.filter((param) => param.in === 'query'),
-    header: enhanced.filter((param) => param.in === 'header'),
-  };
-}
-
-function getParameterExample(param) {
-  if (!param) return undefined;
-  if (param.example !== undefined) return param.example;
-  const schemaExample = param.schema && param.schema.example !== undefined ? param.schema.example : undefined;
-  if (schemaExample !== undefined) return schemaExample;
-  if (param.examples && typeof param.examples === 'object') {
-    for (const value of Object.values(param.examples)) {
-      if (value && typeof value === 'object' && 'value' in value && value.value !== undefined) {
-        return value.value;
-      }
-    }
-  }
-  if (Array.isArray(param.schema?.enum) && param.schema.enum.length) {
-    return param.schema.enum[0];
-  }
-  if (param.schema && param.schema.default !== undefined) return param.schema.default;
-  return undefined;
-}
-
-function formatExampleValue(value) {
-  if (value === undefined || value === null) return '';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return '';
-  }
-}
-
-function tryParseJsonExample(value) {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string') return value;
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return undefined;
-  }
-}
-
-function stringifyForScript(value) {
-  return JSON.stringify(value).replace(/</g, '\\u003C');
-}
-
-function buildProxyLookup(table) {
-  const map = new Map();
-  if (!Array.isArray(table)) return map;
-  table.forEach((entry) => {
-    if (!entry || typeof entry.originalUrl !== 'string') return;
-    const normalized = normalizeServerUrl(entry.originalUrl);
-    if (!normalized) return;
-    map.set(normalized, entry);
-    if (typeof entry.normalizedUrl === 'string' && entry.normalizedUrl) {
-      map.set(entry.normalizedUrl, entry);
-    }
-  });
-  return map;
-}
-
-function normalizeServerUrl(url) {
-  if (typeof url !== 'string') return '';
-  const trimmed = url.trim();
-  if (!trimmed) return '';
-  try {
-    const parsed = new URL(trimmed);
-    const cleanPath = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname.replace(/\/+$/g, '') : '';
-    return `${parsed.origin}${cleanPath}`;
-  } catch {
-    return trimmed;
-  }
-}
 
 const LANGUAGE_ICON_MAP = new Map(
   Object.entries({
@@ -714,51 +190,21 @@ const LANGUAGE_ICON_MAP = new Map(
     ts: 'seti:typescript',
     python: 'seti:python',
     py: 'seti:python',
-    go: 'seti:go',
-    golang: 'seti:go',
-    java: 'seti:java',
-    kotlin: 'seti:kotlin',
-    csharp: 'seti:c-sharp',
-    json: 'seti:json',
-    yaml: 'seti:yml',
-    yml: 'seti:yml',
-    xml: 'seti:xml',
-    http: 'lucide:network',
-  })
-);
-
-function normalizeKey(value) {
-  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+   value.trim().toLowerCase() : '';
 }
 
 function getLanguageIcon(language, fallback) {
   const key = normalizeKey(language);
   if (LANGUAGE_ICON_MAP.has(key)) return LANGUAGE_ICON_MAP.get(key);
   const fallbackKey = normalizeKey(fallback);
-  if (LANGUAGE_ICON_MAP.has(fallbackKey)) return LANGUAGE_ICON_MAP.get(fallbackKey);
-  return undefined;
-}
-
-function getTabsSyncKey(prefix, operationSlug, extra = '') {
-  const base = [prefix, operationSlug, extra].filter(Boolean).join('-');
-  return base.replace(/[^a-z0-9-]+/gi, '-');
-}
-
-const LANGUAGE_STORAGE_KEY = 'starlight-preferred-lang';
-const TRY_IT_STORAGE_KEY = 'starlight-openapi-navigator-api-key';
+  if (LANGUAGE_ICON_MAP.has(fallbackKey)) return LANGUAGE_ICON_MAP.get(falKEY = 'starlight-openapi-navigator-api-key';
 
 const resolveSchemaReference = (ref) => {
   if (typeof ref !== 'string') return undefined;
   const match = ref.match(/#\/components\/schemas\/(.+)$/);
   if (!match) return undefined;
   const name = match[1];
-  const slug = schemaSlugMap.get(name) ?? name.toLowerCase();
-  return { name, slug };
-};
----
-
-{!tag && (
-  <div class="api-operation-page__missing">
+  const slug = schemaSlugMap.get(name) ??e__missing">
     {showSearch && (
       <div class="api-operation-page__search">
         <OpenApiEndpointSearch
@@ -796,13 +242,6 @@ const resolveSchemaReference = (ref) => {
 
 {tag && selectedOperation && (
   <div class="api-operation-page">
-    {tryItConfig && (
-      <script
-        type="application/json"
-        id={`tryit-config-${tryItConfig.slug}`}
-        set:html={stringifyForScript(tryItConfig)}
-      ></script>
-    )}
     {showSearch && (
       <div class="api-operation__search">
         <OpenApiEndpointSearch
@@ -1144,334 +583,21 @@ const resolveSchemaReference = (ref) => {
         </details>
       )}
 
-      <details
-        class="api-operation__panel"
-        data-panel-storage-key={panelStorageKeys.tryIt}
-      >
-        <summary>
+      {selectedOperation && tryItHref && (
+        <aside class="api-operation__tryit-cta">
           <Icon name="lucide:play" aria-hidden="true" />
-          Try it live
-        </summary>
-        <div class="api-operation__panel-body">
-          <AnchorHeading level="3" id={panelIds.tryIt} class="api-operation__panel-title">
-            Try it live
-          </AnchorHeading>
-          <div class="api-tryit">
-            <p class="api-tryit__lead">
-              Save your API key once and reuse it across endpoints. Configure the request below and send it directly from the docs.
+          <div class="api-operation__tryit-copy">
+            <p class="api-operation__tryit-title">Try this endpoint live</p>
+            <p class="api-operation__tryit-text">
+              Launch the interactive playground to send real requests with your credentials.
             </p>
-            <label class="api-tryit__label" for={apiKeyFieldId}>API key</label>
-            <div class="api-tryit__input-group">
-              <input
-                id={apiKeyFieldId}
-                type="password"
-                inputmode="text"
-                autocomplete="off"
-                spellcheck="false"
-                autocapitalize="none"
-                placeholder="sk_live_..."
-                data-api-key-input
-                aria-describedby={`${apiKeyFieldId}-hint`}
-              />
-              <button type="button" class="api-tryit__clear" data-api-key-clear>
-                Clear
-              </button>
-            </div>
-            <p class="api-tryit__hint" id={`${apiKeyFieldId}-hint`}>
-              Stored locally in your browser. Removing it clears access for this device.
-            </p>
-
-            <form
-              class="api-tryit__form"
-              data-tryit-form={selectedOperation.slug}
-              data-method={selectedOperation.method?.toUpperCase?.() ?? ''}
-              data-path={selectedOperation.path}
-            >
-              <div class="api-tryit__group">
-                <label class="api-tryit__label" for={`${selectedOperation.slug}-server`}>Server</label>
-                <select
-                  id={`${selectedOperation.slug}-server`}
-                  class="api-tryit__input"
-                  data-tryit-server
-                >
-                  {operationServers.length > 0
-                    ? operationServers.map((server, index) => (
-                        <option value={server.url} selected={index === 0}>
-                          {server.isProxy && server.originalUrl
-                            ? `${server.originalUrl} (proxy)`
-                            : server.url}
-                          {server.description ? ` — ${server.description}` : ''}
-                        </option>
-                      ))
-                    : (
-                        <option value="">Use current origin</option>
-                      )}
-                </select>
-              </div>
-
-              {pathParameters.length > 0 && (
-                <fieldset class="api-tryit__fieldset">
-                  <legend>Path parameters</legend>
-                {pathParameters.map((param) => {
-                    const example = param.exampleValue ?? '';
-                    return (
-                      <div class="api-tryit__field">
-                        <label class="api-tryit__label" for={`${selectedOperation.slug}-path-${param.name}`}>
-                          {param.name}
-                          {param.required && <span class="api-tryit__required">*</span>}
-                        </label>
-                        <input
-                          id={`${selectedOperation.slug}-path-${param.name}`}
-                          class="api-tryit__input"
-                          type="text"
-                          name={param.name}
-                          data-param-location="path"
-                          data-param-name={param.name}
-                          required={param.required}
-                          value={example ?? ''}
-                          placeholder={example ?? ''}
-                        />
-                        {param.description && <p class="api-tryit__hint">{param.description}</p>}
-                      </div>
-                    );
-                  })}
-                </fieldset>
-              )}
-
-              {queryParameters.length > 0 && (
-                <fieldset class="api-tryit__fieldset">
-                  <legend>Query parameters</legend>
-                {queryParameters.map((param) => {
-                    const example = param.exampleValue ?? '';
-                    return (
-                      <div class="api-tryit__field">
-                        <label class="api-tryit__label" for={`${selectedOperation.slug}-query-${param.name}`}>
-                          {param.name}
-                          {param.required && <span class="api-tryit__required">*</span>}
-                        </label>
-                        <input
-                          id={`${selectedOperation.slug}-query-${param.name}`}
-                          class="api-tryit__input"
-                          type="text"
-                          name={param.name}
-                          data-param-location="query"
-                          data-param-name={param.name}
-                          required={param.required}
-                          value={param.required && example ? example : ''}
-                          placeholder={example ?? ''}
-                        />
-                        {param.description && <p class="api-tryit__hint">{param.description}</p>}
-                      </div>
-                    );
-                  })}
-                </fieldset>
-              )}
-
-              {headerParameters.length > 0 && (
-                <fieldset class="api-tryit__fieldset">
-                  <legend>Header parameters</legend>
-                {headerParameters.map((param) => {
-                    const example = param.exampleValue ?? '';
-                    return (
-                      <div class="api-tryit__field">
-                        <label class="api-tryit__label" for={`${selectedOperation.slug}-header-${param.name}`}>
-                          {param.name}
-                          {param.required && <span class="api-tryit__required">*</span>}
-                        </label>
-                        <input
-                          id={`${selectedOperation.slug}-header-${param.name}`}
-                          class="api-tryit__input"
-                          type="text"
-                          name={param.name}
-                          data-param-location="header"
-                          data-param-name={param.name}
-                          required={param.required}
-                          value={param.required && example ? example : ''}
-                          placeholder={example ?? ''}
-                        />
-                        {param.description && <p class="api-tryit__hint">{param.description}</p>}
-                      </div>
-                    );
-                  })}
-                </fieldset>
-              )}
-
-              {bodyOptions.length > 0 && (
-                <fieldset class="api-tryit__fieldset">
-                  <legend>Request body</legend>
-
-                  {bodyOptions.length > 1 ? (
-                    <div class="api-tryit__group">
-                      <label class="api-tryit__label" for={`${selectedOperation.slug}-body-content-type`}>
-                        Content type
-                      </label>
-                      <select
-                        id={`${selectedOperation.slug}-body-content-type`}
-                        class="api-tryit__input"
-                        data-tryit-body-content-type
-                      >
-                        {bodyOptions.map((option, index) => (
-                          <option value={option.contentType} selected={index === 0}>
-                            {option.contentType}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  ) : (
-                    <p class="api-tryit__hint">
-                      Content type: <code>{bodyOptions[0].contentType}</code>
-                    </p>
-                  )}
-
-                  {bodyOptions.map((option, index) => {
-                    const optionId = `${selectedOperation.slug}-body-${index}`;
-                    const defaultMode = option.supportsForm ? 'form' : 'raw';
-                    return (
-                      <div
-                        class="api-tryit__body-option"
-                        data-body-option
-                        data-content-type={option.contentType}
-                        data-body-mode={defaultMode}
-                        data-has-schema={option.supportsForm ? 'true' : undefined}
-                        data-required={option.required ? 'true' : 'false'}
-                        hidden={index !== 0}
-                      >
-                        <div class="api-tryit__body-heading">
-                          <span class="api-tryit__body-tag">
-                            {option.contentType}
-                          </span>
-                          <span class="api-tryit__body-meta">
-                            {option.required ? 'Required' : 'Optional'}
-                            {option.schemaType ? ` • Schema: ${option.schemaType}` : ''}
-                          </span>
-                        </div>
-
-                        {option.supportsForm && (
-                          <div class="api-tryit__body-mode">
-                            <span class="api-tryit__body-mode-label">Input mode:</span>
-                            <label class="api-tryit__body-mode-choice">
-                              <input
-                                type="radio"
-                                name={`${selectedOperation.slug}-body-mode-${index}`}
-                                value="form"
-                                data-body-mode-input
-                                checked
-                              />
-                              Form
-                            </label>
-                            <label class="api-tryit__body-mode-choice">
-                              <input
-                                type="radio"
-                                name={`${selectedOperation.slug}-body-mode-${index}`}
-                                value="raw"
-                                data-body-mode-input
-                              />
-                              Raw JSON
-                            </label>
-                          </div>
-                        )}
-
-                        {option.supportsForm && option.schemaWarnings.length > 0 && (
-                          <div class="api-tryit__schema-warning" role="note">
-                            <strong>Form limitations:</strong>
-                            <ul>
-                              {option.schemaWarnings.map((warning) => (
-                                <li>
-                                  {warning.path ? (
-                                    <>
-                                      <strong>{warning.path}:</strong> {warning.message}
-                                    </>
-                                  ) : (
-                                    warning.message
-                                  )}
-                                </li>
-                              ))}
-                            </ul>
-                            <p>Switch to Raw JSON mode to edit unsupported fields.</p>
-                          </div>
-                        )}
-
-                        {!option.supportsForm && option.schemaWarnings.length > 0 && (
-                          <div class="api-tryit__schema-warning" role="note">
-                            <strong>Raw input required:</strong>
-                            <ul>
-                              {option.schemaWarnings.map((warning) => (
-                                <li>
-                                  {warning.path ? (
-                                    <>
-                                      <strong>{warning.path}:</strong> {warning.message}
-                                    </>
-                                  ) : (
-                                    warning.message
-                                  )}
-                                </li>
-                              ))}
-                            </ul>
-                            <p>This body schema uses constructs that are not yet supported by the generated form.</p>
-                          </div>
-                        )}
-
-                        {option.supportsForm && (
-                          <div class="api-tryit__schema" data-schema-form>
-                            <SchemaForm
-                              fields={option.formFields}
-                              optionId={optionId}
-                              initialValue={option.exampleValue}
-                            />
-                          </div>
-                        )}
-
-                        <div class="api-tryit__raw" data-schema-raw hidden={option.supportsForm}>
-                          <label class="api-tryit__label" for={optionId}>
-                            Raw JSON payload
-                          </label>
-                          <textarea
-                            id={optionId}
-                            class="api-tryit__input api-tryit__input--textarea"
-                            data-tryit-body
-                            rows={option.supportsForm ? '12' : '8'}
-                            placeholder={option.schemaType === 'object' ? '{\n  \n}' : ''}
-                          >{option.example ?? ''}</textarea>
-                          <p class="api-tryit__hint">
-                            {option.supportsForm
-                              ? 'Generated from the form inputs above. Switch to Raw JSON mode to edit directly.'
-                              : 'Provide a request payload that matches the documented schema.'}
-                          </p>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </fieldset>
-              )}
-
-              <div class="api-tryit__actions">
-                <button type="submit" class="api-tryit__submit" data-tryit-submit>
-                  Send request
-                </button>
-                <button type="button" class="api-tryit__reset" data-tryit-reset>
-                  Reset
-                </button>
-              </div>
-            </form>
-
-            <div class="api-tryit__response" data-tryit-response>
-              <p class="api-tryit__response-placeholder" data-tryit-response-placeholder>
-                Configure the request and select “Send request” to preview the response.
-              </p>
-              <div class="api-tryit__response-meta">
-                <span data-tryit-response-status>—</span>
-                <span data-tryit-response-time></span>
-              </div>
-              <details class="api-tryit__response-headers" data-tryit-response-headers-container hidden>
-                <summary>Response headers</summary>
-                <pre data-tryit-response-headers></pre>
-              </details>
-              <pre class="api-tryit__response-body" data-tryit-response-body></pre>
-              <div class="api-tryit__response-error" data-tryit-response-error hidden></div>
-            </div>
           </div>
-        </div>
-      </details>
+          <a class="api-operation__tryit-link" href={tryItHref}>
+            Open Try It →
+          </a>
+        </aside>
+      )
+
     </section>
   </div>
 )}
@@ -1762,304 +888,66 @@ const resolveSchemaReference = (ref) => {
   color: var(--color-muted-fg);
 }
 
-.api-tryit {
+.api-operation__tryit-cta {
   display: flex;
-  flex-direction: column;
-  gap: 0.9rem;
-}
-
-.api-tryit__lead {
-  margin: 0;
-  font-size: 0.95rem;
-  color: var(--color-muted-fg);
-}
-
-.api-tryit__label {
-  font-weight: 600;
-}
-
-.api-tryit__form {
-  display: flex;
-  flex-direction: column;
-  gap: 1.25rem;
-  margin-top: 0.5rem;
-}
-
-.api-tryit__group,
-.api-tryit__field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.api-tryit__fieldset {
-  border: 1px solid var(--color-border);
-  border-radius: 0.65rem;
-  padding: 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.api-tryit__fieldset legend {
-  padding: 0 0.35rem;
-  font-weight: 600;
-  font-size: 0.95rem;
-}
-
-.api-tryit__input-group {
-  display: flex;
-  gap: 0.5rem;
   align-items: center;
-}
-
-.api-tryit__input,
-.api-tryit__form select,
-.api-tryit__form textarea {
-  font: inherit;
-  padding: 0.6rem 0.75rem;
-  border-radius: 0.5rem;
-  border: 1px solid var(--color-border);
-  background: var(--color-bg);
-  font-size: 0.95rem;
-}
-
-.api-tryit__form select {
-  cursor: pointer;
-}
-
-.api-tryit__form select:focus,
-.api-tryit__form textarea:focus,
-.api-tryit__input:focus {
-  outline: 2px solid color-mix(in srgb, var(--color-primary) 60%, transparent);
-  outline-offset: 1px;
-}
-
-.api-tryit__input--textarea {
-  font-family: var(--font-mono, ui-monospace);
-  min-height: 10rem;
-  resize: vertical;
-}
-
-.api-tryit__input-group input {
-  flex: 1;
-  padding: 0.65rem 0.75rem;
-  border-radius: 0.5rem;
-  border: 1px solid var(--color-border);
-  background: var(--color-bg);
-  font-family: inherit;
-  font-size: 0.95rem;
-}
-
-.api-tryit__input-group input:focus {
-  outline: 2px solid color-mix(in srgb, var(--color-primary) 60%, transparent);
-  outline-offset: 1px;
-}
-
-.api-tryit__clear {
-  border: 1px solid var(--color-border);
-  background: var(--color-bg-muted, var(--color-bg-selected));
-  color: inherit;
-  padding: 0.45rem 0.8rem;
-  border-radius: 0.5rem;
-  font-size: 0.85rem;
-  cursor: pointer;
-  transition: border-color 150ms ease, background-color 150ms ease;
-}
-
-.api-tryit__clear:hover {
-  border-color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-bg));
-}
-
-.api-tryit__hint {
-  margin: 0;
-  font-size: 0.8rem;
-  color: var(--color-muted-fg);
-}
-
-.api-tryit__required {
-  color: var(--color-primary);
-  margin-left: 0.25rem;
-}
-
-.api-tryit__actions {
-  display: flex;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-
-.api-tryit__body-option {
-  border: 1px solid var(--color-border);
-  border-radius: 0.65rem;
-  padding: 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.9rem;
-  background: var(--color-bg-muted, var(--color-bg));
-}
-
-.api-tryit__body-heading {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: baseline;
-  justify-content: space-between;
-}
-
-.api-tryit__body-tag {
-  font-family: var(--font-mono, ui-monospace);
-  font-size: 0.75rem;
-  background: var(--color-bg-selected);
-  padding: 0.2rem 0.55rem;
-  border-radius: 999px;
-}
-
-.api-tryit__body-meta {
-  font-size: 0.8rem;
-  color: var(--color-muted-fg);
-}
-
-.api-tryit__body-mode {
-  display: flex;
-  flex-wrap: wrap;
   gap: 1rem;
-  align-items: center;
+  margin: 1.5rem 0 0;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  background: var(--color-bg-muted, var(--color-bg-selected));
 }
 
-.api-tryit__body-mode-label {
+.api-operation__tryit-copy {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.api-operation__tryit-title {
+  font-size: 1rem;
   font-weight: 600;
-  font-size: 0.9rem;
+  margin: 0;
 }
 
-.api-tryit__body-mode-choice {
+.api-operation__tryit-text {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--color-muted-fg);
+}
+
+.api-operation__tryit-link {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.9rem;
-  cursor: pointer;
-}
-
-.api-tryit__schema-warning {
-  border-left: 4px solid var(--color-warning-border, color-mix(in srgb, var(--color-warning, #f59f00) 80%, transparent));
-  background: color-mix(in srgb, var(--color-warning, #f59f00) 18%, transparent);
-  padding: 0.6rem 0.75rem;
-  border-radius: 0.45rem;
-  font-size: 0.85rem;
-  color: var(--color-warning-fg, #f08c00);
-}
-
-.api-tryit__schema-warning ul {
-  margin: 0.35rem 0;
-  padding-left: 1.1rem;
-}
-
-.api-tryit__schema,
-.api-tryit__raw {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.api-tryit__schema-fields {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.api-tryit__fieldset--schema {
-  border-color: var(--color-border);
-  background: var(--color-bg);
-}
-
-.api-tryit__field--unsupported {
-  border: 1px dashed color-mix(in srgb, var(--color-warning, #f59f00) 40%, transparent);
-  border-radius: 0.55rem;
-  padding: 0.6rem 0.75rem;
-  background: color-mix(in srgb, var(--color-warning, #f59f00) 12%, transparent);
-}
-
-.api-tryit__hint--warning {
-  color: var(--color-warning-fg, #f08c00);
-}
-
-.api-tryit__response-placeholder {
-  margin: 0 0 0.75rem;
-  font-size: 0.85rem;
-  color: var(--color-muted-fg);
-  font-style: italic;
-}
-
-.api-tryit__submit,
-.api-tryit__reset,
-.api-tryit__clear {
-  font: inherit;
-  cursor: pointer;
-}
-
-.api-tryit__submit {
+  justify-content: center;
+  padding: 0.6rem 0.9rem;
+  border-radius: 0.6rem;
+  font-weight: 600;
   background: var(--color-primary);
-  color: var(--color-bg);
-  border: 1px solid var(--color-primary);
-  border-radius: 0.5rem;
-  padding: 0.55rem 1.1rem;
-  font-weight: 600;
-  transition: opacity 150ms ease;
+  color: var(--color-on-primary, #fff);
+  text-decoration: none;
+  transition: background-color 150ms ease, transform 150ms ease;
 }
 
-.api-tryit__submit[disabled] {
-  opacity: 0.65;
-  cursor: progress;
+.api-operation__tryit-link:hover {
+  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--color-primary) 85%, #0000 15%);
 }
 
-.api-tryit__reset {
-  background: var(--color-bg-muted, var(--color-bg));
-  border: 1px solid var(--color-border);
-  border-radius: 0.5rem;
-  padding: 0.55rem 1.1rem;
+@media (max-width: 48rem) {
+  .api-operation__tryit-cta {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .api-operation__tryit-link {
+    width: 100%;
+    justify-content: center;
+  }
 }
 
-.api-tryit__response {
-  border: 1px solid var(--color-border);
-  border-radius: 0.65rem;
-  padding: 1rem;
-  background: var(--color-bg-muted, var(--color-bg));
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.api-tryit__response-meta {
-  display: flex;
-  gap: 0.75rem;
-  align-items: baseline;
-  font-weight: 600;
-}
-
-.api-tryit__response-headers summary {
-  cursor: pointer;
-  font-weight: 600;
-}
-
-.api-tryit__response-body {
-  margin: 0;
-  padding: 0.75rem;
-  border-radius: 0.5rem;
-  background: var(--color-bg);
-  border: 1px solid var(--color-border);
-  font-family: var(--font-mono, ui-monospace);
-  font-size: 0.85rem;
-  max-height: 24rem;
-  overflow: auto;
-}
-
-.api-tryit__response-error {
-  padding: 0.6rem 0.75rem;
-  border-radius: 0.5rem;
-  background: color-mix(in srgb, var(--color-danger, #e03131) 12%, transparent);
-  color: var(--color-danger, #e03131);
-  font-size: 0.9rem;
-}
 
 .api-operation-page {
   display: flex;
@@ -2115,753 +1003,103 @@ const resolveSchemaReference = (ref) => {
 
 <script is:inline>
   (() => {
+    const PANEL_STORAGE_PREFIX = 'starlight-openapi-panel:';
     const LANGUAGE_STORAGE_KEY = 'starlight-preferred-lang';
-    const TRY_IT_STORAGE_KEY = 'starlight-openapi-navigator-api-key';
-    const PANEL_STORAGE_PREFIX = 'starlight-openapi-navigator-panel:';
 
-    const buildPanelStorageKey = (suffix) =>
-      suffix ? `${PANEL_STORAGE_PREFIX}${suffix}` : '';
-
-    const readPanelPreference = (suffix) => {
-      const key = buildPanelStorageKey(suffix);
-      if (!key) return null;
+    const readStorage = (key) => {
       try {
-        const value = window.localStorage?.getItem(key);
-        if (value === '1') return true;
-        if (value === '0') return false;
-      } catch {
-        /* ignore */
-      }
-      return null;
-    };
-
-    const writePanelPreference = (suffix, isOpen) => {
-      const key = buildPanelStorageKey(suffix);
-      if (!key) return;
-      try {
-        window.localStorage?.setItem(key, isOpen ? '1' : '0');
-      } catch {
-        /* ignore */
-      }
-    };
-
-    const hydratePanelOpenState = () => {
-      document.querySelectorAll('[data-panel-storage-key]').forEach((panel) => {
-        if (!(panel instanceof HTMLDetailsElement)) return;
-        if (panel.dataset.panelStateBound === 'true') return;
-
-        const suffix = panel.getAttribute('data-panel-storage-key') || '';
-        if (!suffix) return;
-
-        panel.dataset.panelStateBound = 'true';
-
-        const stored = readPanelPreference(suffix);
-        if (stored === true) {
-          panel.open = true;
-        } else if (stored === false) {
-          panel.open = false;
-        } else if (panel.hasAttribute('data-panel-default-open')) {
-          panel.open = true;
-        }
-
-        panel.addEventListener('toggle', () => {
-          writePanelPreference(suffix, panel.open);
-        });
-      });
-    };
-
-    const normalise = (value) => (value || '').trim().toLowerCase();
-    const isAbsoluteUrl = (value) => typeof value === 'string' && /^https?:\/\//i.test(value);
-
-    const joinRequestPath = (...parts) => {
-      const segments = [];
-      parts.forEach((part) => {
-        if (typeof part !== 'string') return;
-        part
-          .split('/')
-          .map((segment) => segment.trim())
-          .filter(Boolean)
-          .forEach((segment) => segments.push(segment));
-      });
-      return segments.length ? `/${segments.join('/')}` : '/';
-    };
-
-    const buildRequestUrl = (base, path, originFallback) => {
-      const safePath = typeof path === 'string' ? path : '';
-      if (isAbsoluteUrl(base)) {
-        const parsed = new URL(base);
-        const combinedPath = joinRequestPath(parsed.pathname || '/', safePath);
-        const url = new URL(parsed.origin);
-        url.pathname = combinedPath;
-        return url;
-      }
-      const origin = isAbsoluteUrl(originFallback) ? originFallback : originFallback ? originFallback : '';
-      if (!origin) throw new Error('Missing origin');
-      const url = new URL(origin);
-      const combinedPath = joinRequestPath(base || '/', safePath);
-      url.pathname = combinedPath;
-      return url;
-    };
-
-    const buildHttpAuthorizationHeader = (value, schemeName) => {
-      if (!value) return '';
-      if (!schemeName) return value;
-      const normalizedScheme = schemeName.toLowerCase();
-      if (normalizedScheme === 'bearer') {
-        return /^bearer\s+/i.test(value) ? value : `Bearer ${value}`;
-      }
-      if (normalizedScheme === 'basic') {
-        if (/^basic\s+/i.test(value)) return value;
-        try {
-          return `Basic ${btoa(value)}`;
-        } catch {
-          return `Basic ${value}`;
-        }
-      }
-      return `${schemeName} ${value}`;
-    };
-
-    const applySecuritySchemes = ({ apiKey, headers, url, config }) => {
-      if (!apiKey || !config || !Array.isArray(config.security)) return;
-      const keyValue = apiKey.trim();
-      if (!keyValue) return;
-
-      config.security.forEach((scheme) => {
-        if (!scheme || !scheme.type) return;
-
-        if (scheme.type === 'apiKey') {
-          const location = scheme.in || 'header';
-          const name = scheme.name || 'Authorization';
-          if (location === 'header') {
-            headers.set(name, keyValue);
-          } else if (location === 'query') {
-            url.searchParams.set(name, keyValue);
-          } else if (location === 'cookie') {
-            headers.append('Cookie', `${name}=${encodeURIComponent(keyValue)}`);
-          }
-        } else if (scheme.type === 'http') {
-          const headerValue = buildHttpAuthorizationHeader(keyValue, scheme.scheme || 'Bearer');
-          if (headerValue) {
-            headers.set('Authorization', headerValue);
-          }
-        }
-      });
-    };
-
-    const readLanguagePreference = () => {
-      try {
-        return window.localStorage?.getItem(LANGUAGE_STORAGE_KEY) || '';
+        return window.localStorage?.getItem(key) || '';
       } catch {
         return '';
       }
     };
 
-    const writeLanguagePreference = (value) => {
+    const writeStorage = (key, value) => {
       try {
-        if (value) {
-          window.localStorage?.setItem(LANGUAGE_STORAGE_KEY, value);
+        if (value === undefined || value === null || value === '') {
+          window.localStorage?.removeItem(key);
         } else {
-          window.localStorage?.removeItem(LANGUAGE_STORAGE_KEY);
+          window.localStorage?.setItem(key, value);
         }
       } catch {
         /* ignore */
       }
     };
 
-    const applyLanguagePreference = (value) => {
-      const target = normalise(value);
-      if (!target) return;
+    const normalize = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
 
-      document
-        .querySelectorAll('starlight-tabs[data-sync-key^="sample-"]')
-        .forEach((tabsEl) => {
-          const tabs = Array.from(tabsEl.querySelectorAll('[role="tab"]'));
-          const matchIndex = tabs.findIndex((tab) => normalise(tab.textContent) === target);
-          if (matchIndex === -1) return;
-          const match = tabs[matchIndex];
-          if (match.getAttribute('aria-selected') === 'true') return;
+    const hydratePanelOpenState = () => {
+      document.querySelectorAll('[data-panel-storage-key]').forEach((details) => {
+        if (!(details instanceof HTMLDetailsElement)) return;
+        const key = details.getAttribute('data-panel-storage-key');
+        if (!key) return;
+        const stored = readStorage(PANEL_STORAGE_PREFIX + key);
+        if (stored === 'open') {
+          details.open = true;
+        } else if (stored === 'closed') {
+          details.open = false;
+        }
+      });
+    };
 
-          const api = /** @type {any} */ (tabsEl);
-          if (typeof api.switchTab === 'function') {
-            api.switchTab(match, matchIndex, false);
-          } else {
-            match.click();
-          }
+    const attachPanelListeners = () => {
+      document.querySelectorAll('[data-panel-storage-key]').forEach((details) => {
+        if (!(details instanceof HTMLDetailsElement)) return;
+        if (details.dataset.panelListenerAttached === 'true') return;
+        details.dataset.panelListenerAttached = 'true';
+        const key = details.getAttribute('data-panel-storage-key');
+        if (!key) return;
+        details.addEventListener('toggle', () => {
+          writeStorage(PANEL_STORAGE_PREFIX + key, details.open ? 'open' : 'closed');
         });
+      });
+    };
+
+    const applyLanguagePreference = (label) => {
+      if (!label) return;
+      const desired = normalize(label);
+      if (!desired) return;
+      document.querySelectorAll('starlight-tabs[data-sync-key^="sample-"]').forEach((tabsEl) => {
+        const tabs = tabsEl?.shadowRoot?.querySelectorAll('[role="tab"]');
+        if (!tabs || !tabs.length) return;
+        for (const tab of tabs) {
+          if (!(tab instanceof HTMLElement)) continue;
+          const tabLabel = normalize(tab.textContent || '');
+          if (tabLabel === desired) {
+            tab.click();
+            break;
+          }
+        }
+      });
     };
 
     const hydrateLanguagePreference = () => {
-      const stored = readLanguagePreference();
+      const stored = readStorage(LANGUAGE_STORAGE_KEY);
       if (stored) {
         applyLanguagePreference(stored);
       }
     };
 
     const attachLanguageListeners = () => {
-      document
-        .querySelectorAll('starlight-tabs[data-sync-key^="sample-"]')
-        .forEach((tabsEl) => {
-          if (tabsEl.hasAttribute('data-language-listener')) return;
-          tabsEl.setAttribute('data-language-listener', 'true');
-          tabsEl.addEventListener('click', (event) => {
-            const target = event.target;
-            if (!(target instanceof HTMLElement)) return;
-            if (target.getAttribute('role') !== 'tab') return;
-            const label = target.textContent?.trim();
-            if (!label) return;
-            writeLanguagePreference(label);
-            applyLanguagePreference(label);
-          });
-        });
-    };
-
-    const readApiKey = () => {
-      try {
-        return window.localStorage?.getItem(TRY_IT_STORAGE_KEY) || '';
-      } catch {
-        return '';
-      }
-    };
-
-    const writeApiKey = (value) => {
-      try {
-        const trimmed = (value || '').trim();
-        if (trimmed) {
-          window.localStorage?.setItem(TRY_IT_STORAGE_KEY, trimmed);
-        } else {
-          window.localStorage?.removeItem(TRY_IT_STORAGE_KEY);
-        }
-      } catch {
-        /* ignore */
-      }
-    };
-
-    const hydrateApiKeyInputs = () => {
-      const stored = readApiKey();
-      document.querySelectorAll('[data-api-key-input]').forEach((node) => {
-        if (node instanceof HTMLInputElement) {
-          node.value = stored;
-        }
-      });
-    };
-
-    const attachApiKeyListeners = () => {
-      document.querySelectorAll('[data-api-key-input]').forEach((node) => {
-        if (!(node instanceof HTMLInputElement)) return;
-        if (node.dataset.apiKeyListenerAttached === 'true') return;
-        node.dataset.apiKeyListenerAttached = 'true';
-        node.addEventListener('input', (event) => {
+      document.querySelectorAll('starlight-tabs[data-sync-key^="sample-"]').forEach((tabsEl) => {
+        if (tabsEl.dataset.langListenerAttached === 'true') return;
+        tabsEl.dataset.langListenerAttached = 'true';
+        tabsEl.addEventListener('click', (event) => {
           const target = event.target;
-          if (!(target instanceof HTMLInputElement)) return;
-          writeApiKey(target.value);
-        });
-      });
-
-      document.querySelectorAll('[data-api-key-clear]').forEach((node) => {
-        if (!(node instanceof HTMLButtonElement)) return;
-        if (node.dataset.apiKeyListenerAttached === 'true') return;
-        node.dataset.apiKeyListenerAttached = 'true';
-        node.addEventListener('click', () => {
-          writeApiKey('');
-          hydrateApiKeyInputs();
+          if (!(target instanceof HTMLElement)) return;
+          if (target.getAttribute('role') !== 'tab') return;
+          const label = target.textContent?.trim();
+          if (!label) return;
+          writeStorage(LANGUAGE_STORAGE_KEY, label);
         });
       });
     };
-
-    const initTryItForms = () => {
-      document.querySelectorAll('[data-tryit-form]').forEach((node) => {
-        if (!(node instanceof HTMLFormElement)) return;
-        if (node.dataset.tryitListenerAttached === 'true') return;
-        const slug = node.getAttribute('data-tryit-form');
-        if (!slug) return;
-        const configEl = document.getElementById(`tryit-config-${slug}`);
-        if (!configEl) return;
-        let config;
-        try {
-          config = JSON.parse(configEl.textContent || '{}');
-        } catch (error) {
-          console.error('Failed to parse try-it config', error);
-          return;
-        }
-        if (!config || !config.method || !config.path) return;
-        node.dataset.tryitListenerAttached = 'true';
-        setupTryItForm(node, config);
-      });
-    };
-
-    const setupTryItForm = (form, config) => {
-      const container = form.closest('.api-tryit');
-      const responseContainer = container?.querySelector('[data-tryit-response]');
-      const responseStatus = responseContainer?.querySelector('[data-tryit-response-status]');
-      const responseTime = responseContainer?.querySelector('[data-tryit-response-time]');
-      const responseBody = responseContainer?.querySelector('[data-tryit-response-body]');
-      const responseHeadersContainer = responseContainer?.querySelector('[data-tryit-response-headers-container]');
-      const responseHeaders = responseHeadersContainer?.querySelector('[data-tryit-response-headers]');
-      const responseError = responseContainer?.querySelector('[data-tryit-response-error]');
-      const responsePlaceholder = responseContainer?.querySelector('[data-tryit-response-placeholder]');
-
-      const serverSelect = form.querySelector('[data-tryit-server]');
-      const pathInputs = Array.from(form.querySelectorAll('[data-param-location="path"]'));
-      const queryInputs = Array.from(form.querySelectorAll('[data-param-location="query"]'));
-      const headerInputs = Array.from(form.querySelectorAll('[data-param-location="header"]'));
-      const contentTypeSelect = form.querySelector('[data-tryit-body-content-type]');
-      const bodyOptionContainers = Array.from(form.querySelectorAll('[data-body-option]'));
-      let activeBodyOption = bodyOptionContainers.find((node) => !node.hasAttribute('hidden')) || bodyOptionContainers[0] || null;
-      const submitButton = form.querySelector('[data-tryit-submit]');
-      const resetButton = form.querySelector('[data-tryit-reset]');
-
-      const method = (form.dataset.method || config.method || 'GET').toUpperCase();
-      const pathTemplate = form.dataset.path || config.path || '';
-
-      const setLoading = (loading) => {
-        if (submitButton instanceof HTMLButtonElement) {
-          submitButton.disabled = loading;
-          submitButton.textContent = loading ? 'Sending…' : 'Send request';
-        }
-      };
-
-      const hideResponse = () => {
-        if (responsePlaceholder) responsePlaceholder.hidden = false;
-        if (responseStatus) {
-          responseStatus.textContent = '—';
-          delete responseStatus.dataset.state;
-        }
-        if (responseTime) responseTime.textContent = '';
-        if (responseBody) responseBody.textContent = '';
-        if (responseHeadersContainer) responseHeadersContainer.hidden = true;
-        if (responseError) {
-          responseError.textContent = '';
-          responseError.hidden = true;
-        }
-      };
-
-      const showResponse = () => {
-        if (responseContainer) responseContainer.hidden = false;
-        if (responsePlaceholder) responsePlaceholder.hidden = true;
-      };
-
-      const showError = (message) => {
-        showResponse();
-        if (responseStatus) responseStatus.textContent = 'Request failed';
-        if (responseTime) responseTime.textContent = '';
-        if (responseBody) responseBody.textContent = '';
-        if (responseHeadersContainer) responseHeadersContainer.hidden = true;
-        if (responseError) {
-          responseError.textContent = message;
-          responseError.hidden = false;
-        }
-      };
-
-      const prettifyResponseBody = (text, contentType) => {
-        if (!text) return '';
-        const type = (contentType || '').toLowerCase();
-        if (type.includes('json')) {
-          try {
-            return JSON.stringify(JSON.parse(text), null, 2);
-          } catch {
-            return text;
-          }
-        }
-        return text;
-      };
-
-      const showSuccess = (status, statusText, elapsed, bodyText, headers) => {
-        showResponse();
-        if (responseError) responseError.hidden = true;
-        if (responseStatus) {
-          responseStatus.textContent = `${status} ${statusText || ''}`.trim();
-          responseStatus.dataset.state = status >= 200 && status < 300 ? 'success' : 'error';
-        }
-        if (responseTime) responseTime.textContent = `${Math.round(elapsed)} ms`;
-        if (responseBody) {
-          const pretty = prettifyResponseBody(bodyText, headers?.get?.('content-type'));
-          responseBody.textContent = pretty;
-        }
-        if (responseHeaders && responseHeadersContainer) {
-          const lines = [];
-          if (headers && typeof headers.forEach === 'function') {
-            headers.forEach((value, key) => {
-              lines.push(`${key}: ${value}`);
-            });
-          }
-          if (lines.length) {
-            responseHeaders.textContent = lines.join('\n');
-            responseHeadersContainer.hidden = false;
-          } else {
-            responseHeadersContainer.hidden = true;
-          }
-        }
-      };
-
-      const getBodyField = () => (activeBodyOption ? activeBodyOption.querySelector('[data-tryit-body]') : null);
-      const getBodyMode = () => activeBodyOption?.getAttribute('data-body-mode') || 'raw';
-      const isBodyRequired = () => activeBodyOption?.getAttribute('data-required') === 'true';
-
-      const setValueAtPath = (target, segments, value) => {
-        if (!Array.isArray(segments) || !segments.length) return;
-        let cursor = target;
-        segments.forEach((segment, index) => {
-          if (index === segments.length - 1) {
-            cursor[segment] = value;
-          } else {
-            if (!cursor[segment] || typeof cursor[segment] !== 'object' || Array.isArray(cursor[segment])) {
-              cursor[segment] = {};
-            }
-            cursor = cursor[segment];
-          }
-        });
-      };
-
-      const serializeSchemaForm = (container) => {
-        if (!container) return { json: '', hasContent: false };
-        const inputs = Array.from(container.querySelectorAll('[data-schema-input]'));
-        const payload = {};
-        let hasContent = false;
-        let errorMessage = null;
-
-        inputs.forEach((input) => {
-          if (!(input instanceof HTMLInputElement) && !(input instanceof HTMLTextAreaElement)) return;
-          const pathAttr = input.getAttribute('data-schema-path');
-          if (!pathAttr) return;
-          const type = input.getAttribute('data-schema-type') || 'string';
-          const required = input.hasAttribute('required');
-          const segments = pathAttr.split('.').filter(Boolean);
-          if (!segments.length) return;
-
-          let include = true;
-          let value;
-
-          if (type === 'boolean') {
-            const raw = input.value;
-            if (raw === 'true' || raw === 'false') {
-              value = raw === 'true';
-            } else {
-              include = false;
-            }
-          } else if (type === 'number' || type === 'integer') {
-            const raw = input.value.trim();
-            if (!raw) {
-              include = false;
-            } else {
-              const parsed = type === 'integer' ? parseInt(raw, 10) : parseFloat(raw);
-              if (Number.isNaN(parsed)) {
-                errorMessage = `Invalid ${type} value for ${pathAttr}`;
-                return;
-              }
-              value = parsed;
-            }
-          } else if (type === 'array') {
-            const raw = input.value.trim();
-            const itemType = input.getAttribute('data-schema-item-type') || 'string';
-            if (!raw) {
-              include = required;
-              value = [];
-            } else {
-              const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-              if (!lines.length) {
-                include = required;
-                value = [];
-              } else {
-                const parsedItems = [];
-                for (const line of lines) {
-                  if (itemType === 'integer' || itemType === 'number') {
-                    const numeric = itemType === 'integer' ? parseInt(line, 10) : parseFloat(line);
-                    if (Number.isNaN(numeric)) {
-                      errorMessage = `Invalid ${itemType} value in ${pathAttr}: ${line}`;
-                      break;
-                    }
-                    parsedItems.push(numeric);
-                  } else if (itemType === 'boolean') {
-                    if (line.toLowerCase() === 'true' || line.toLowerCase() === 'false') {
-                      parsedItems.push(line.toLowerCase() === 'true');
-                    } else {
-                      errorMessage = `Invalid boolean value in ${pathAttr}: ${line}`;
-                      break;
-                    }
-                  } else {
-                    parsedItems.push(line);
-                  }
-                }
-                if (errorMessage) return;
-                value = parsedItems;
-                include = parsedItems.length > 0 || required;
-              }
-            }
-          } else {
-            const raw = input.value;
-            if (!raw.trim()) {
-              if (required) {
-                value = raw.trim();
-              } else {
-                include = false;
-              }
-            } else {
-              value = raw;
-            }
-          }
-
-          if (errorMessage) return;
-          if (!include) return;
-
-          hasContent = true;
-          setValueAtPath(payload, segments, value);
-        });
-
-        if (errorMessage) {
-          return { error: errorMessage };
-        }
-
-        return {
-          json: JSON.stringify(payload, null, 2),
-          hasContent,
-        };
-      };
-
-      const updateBodyMode = (container, mode) => {
-        if (!container) return;
-        container.setAttribute('data-body-mode', mode);
-        const schemaForm = container.querySelector('[data-schema-form]');
-        const rawBlock = container.querySelector('[data-schema-raw]');
-        if (schemaForm) schemaForm.hidden = mode !== 'form';
-        if (rawBlock) rawBlock.hidden = mode !== 'raw';
-        container.querySelectorAll('[data-body-mode-input]').forEach((node) => {
-          if (node instanceof HTMLInputElement) {
-            node.checked = node.value === mode;
-          }
-        });
-      };
-
-      const initialiseBodyOption = (container) => {
-        if (!container) return;
-        const defaultMode = container.getAttribute('data-body-mode') || (container.hasAttribute('data-has-schema') ? 'form' : 'raw');
-        updateBodyMode(container, defaultMode);
-        container.querySelectorAll('[data-body-mode-input]').forEach((node) => {
-          if (!(node instanceof HTMLInputElement)) return;
-          node.addEventListener('change', () => {
-            if (node.checked) {
-              updateBodyMode(container, node.value);
-            }
-          });
-        });
-      };
-
-      const setActiveBodyOption = (contentType) => {
-        let selected = null;
-        bodyOptionContainers.forEach((container, index) => {
-          const matches = container.getAttribute('data-content-type') === contentType || (!contentType && index === 0);
-          container.hidden = !matches;
-          if (matches) selected = container;
-        });
-        if (!selected && bodyOptionContainers.length) {
-          selected = bodyOptionContainers[0];
-          selected.hidden = false;
-        }
-        if (selected) {
-          activeBodyOption = selected;
-          const mode = selected.getAttribute('data-body-mode') || (selected.hasAttribute('data-has-schema') ? 'form' : 'raw');
-          updateBodyMode(selected, mode);
-          form.dataset.bodyContentType = selected.getAttribute('data-content-type') || '';
-        }
-      };
-
-      bodyOptionContainers.forEach((container) => initialiseBodyOption(container));
-
-      if (contentTypeSelect instanceof HTMLSelectElement) {
-        contentTypeSelect.addEventListener('change', () => {
-          setActiveBodyOption(contentTypeSelect.value);
-        });
-        setActiveBodyOption(contentTypeSelect.value);
-      } else {
-        setActiveBodyOption(activeBodyOption?.getAttribute('data-content-type') || '');
-      }
-
-      const resetBodyOptions = () => {
-        bodyOptionContainers.forEach((container) => {
-          const defaultMode = container.getAttribute('data-has-schema') ? 'form' : 'raw';
-          updateBodyMode(container, defaultMode);
-        });
-        if (contentTypeSelect instanceof HTMLSelectElement) {
-          const firstValue = contentTypeSelect.options[0]?.value || '';
-          contentTypeSelect.value = firstValue;
-          setActiveBodyOption(firstValue);
-        } else {
-          setActiveBodyOption(bodyOptionContainers[0]?.getAttribute('data-content-type') || '');
-        }
-      };
-
-      let abortController = null;
-
-      const describeFetchError = (error) => {
-        if (!error) return 'Request failed. See console for details.';
-        const message = String(error?.message || '').toLowerCase();
-        if (error instanceof TypeError) {
-          if (message.includes('failed to fetch') || message.includes('networkerror')) {
-            return 'Request blocked by the browser. This often happens when CORS is disabled on the API or the certificate is invalid.';
-          }
-        }
-        return 'Request failed. See console for details.';
-      };
-
-      form.addEventListener('submit', async (event) => {
-        event.preventDefault();
-
-        if (abortController) {
-          abortController.abort();
-        }
-        abortController = new AbortController();
-
-        const getValue = (input) => {
-          if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) return '';
-          return input.value.trim();
-        };
-
-        const baseUrlRaw = serverSelect instanceof HTMLSelectElement ? serverSelect.value.trim() : '';
-        const originFallback = typeof window !== 'undefined' ? window.location.origin : '';
-
-        let finalPath = pathTemplate;
-        const missingPath = [];
-        pathInputs.forEach((input) => {
-          if (!(input instanceof HTMLInputElement)) return;
-          const name = input.dataset.paramName;
-          if (!name) return;
-          const value = getValue(input);
-          if (!value) {
-            missingPath.push(name);
-          }
-          finalPath = finalPath.replace(`{${name}}`, encodeURIComponent(value));
-        });
-        if (missingPath.length) {
-          showError(`Missing required path parameter${missingPath.length > 1 ? 's' : ''}: ${missingPath.join(', ')}`);
-          return;
-        }
-
-        let url;
-        try {
-          url = buildRequestUrl(baseUrlRaw, finalPath, originFallback);
-        } catch (error) {
-          console.error('Try it live buildRequestUrl error', error);
-          showError('Unable to construct request URL.');
-          return;
-        }
-
-        const searchParams = url.searchParams;
-        queryInputs.forEach((input) => {
-          if (!(input instanceof HTMLInputElement)) return;
-          const name = input.dataset.paramName;
-          if (!name) return;
-          const value = getValue(input);
-          if (!value) return;
-          searchParams.set(name, value);
-        });
-
-        const headers = new Headers();
-        headers.set('Accept', 'application/json, */*;q=0.8');
-        headerInputs.forEach((input) => {
-          if (!(input instanceof HTMLInputElement)) return;
-          const name = input.dataset.paramName;
-          if (!name) return;
-          const value = getValue(input);
-          if (!value) return;
-          headers.set(name, value);
-        });
-
-        const apiKey = readApiKey()?.trim?.();
-        if (apiKey) {
-          applySecuritySchemes({ apiKey, headers, url, config });
-        }
-
-        const activeBodyField = getBodyField();
-        const activeMode = getBodyMode();
-        const bodyIsRequired = isBodyRequired();
-        let body;
-
-        if (activeBodyField instanceof HTMLTextAreaElement) {
-          if (activeMode === 'form' && activeBodyOption?.hasAttribute('data-has-schema')) {
-            const serialised = serializeSchemaForm(activeBodyOption);
-            if (serialised?.error) {
-              showError(serialised.error);
-              return;
-            }
-            if (serialised?.hasContent) {
-              activeBodyField.value = serialised.json;
-            } else {
-              activeBodyField.value = bodyIsRequired ? '{}' : '';
-            }
-          }
-
-          const raw = getValue(activeBodyField);
-          if (raw) {
-            const contentType = form.dataset.bodyContentType || activeBodyOption?.getAttribute('data-content-type') || config.body?.[0]?.contentType || '';
-            if (contentType) {
-              headers.set('Content-Type', contentType);
-            }
-            body = raw;
-          } else if (bodyIsRequired || config.body?.some((option) => option.required)) {
-            showError('Request body is required.');
-            return;
-          }
-        } else if (bodyIsRequired || config.body?.some((option) => option.required)) {
-          showError('Request body is required.');
-          return;
-        }
-
-        const upperMethod = method.toUpperCase();
-        if (upperMethod === 'GET' || upperMethod === 'HEAD') {
-          body = undefined;
-        }
-
-        const requestInit = {
-          method: upperMethod,
-          headers,
-          body,
-          signal: abortController.signal,
-        };
-
-        setLoading(true);
-        showResponse();
-        if (responseError) responseError.hidden = true;
-        if (responseStatus) responseStatus.textContent = 'Sending…';
-        if (responseTime) responseTime.textContent = '';
-        if (responseBody) responseBody.textContent = '';
-        if (responseHeadersContainer) responseHeadersContainer.hidden = true;
-
-        const started = performance.now();
-        try {
-          const response = await fetch(url.toString(), requestInit);
-          const elapsed = performance.now() - started;
-          const text = await response.text();
-          showSuccess(response.status, response.statusText, elapsed, text, response.headers);
-        } catch (error) {
-          if (error instanceof DOMException && error.name === 'AbortError') {
-            showError('Request cancelled.');
-          } else {
-            console.error('Try it live request failed', error);
-            showError(describeFetchError(error));
-          }
-        } finally {
-          setLoading(false);
-        }
-      });
-
-      if (resetButton instanceof HTMLButtonElement) {
-        resetButton.addEventListener('click', () => {
-          form.reset();
-          resetBodyOptions();
-          hideResponse();
-        });
-      }
-
-      hideResponse();
-    };
-
 
     const init = () => {
       hydratePanelOpenState();
+      attachPanelListeners();
       hydrateLanguagePreference();
       attachLanguageListeners();
-      hydrateApiKeyInputs();
-      attachApiKeyListeners();
-      initTryItForms();
     };
 
     if (typeof window !== 'undefined') {

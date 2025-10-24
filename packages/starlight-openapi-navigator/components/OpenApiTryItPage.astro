@@ -1,15 +1,11 @@
 ---
-import { Tabs, TabItem, Icon } from '@astrojs/starlight/components';
 import AnchorHeading from '@astrojs/starlight/components/AnchorHeading.astro';
-import { loadOperation, loadSchemaDefinitions, getOperationPreferredTag } from 'virtual:starlight-openapi-navigator/spec-data';
 import generatedConfig from 'virtual:starlight-openapi-navigator/config';
 import '../runtime/theme.css';
 
-const { tagSlug, operationSlug } = Astro.props;
 const configuredSlug = typeof generatedConfig?.baseSlug === 'string' && generatedConfig.baseSlug.length
   ? generatedConfig.baseSlug
   : 'api';
-const preferredTag = getOperationPreferredTag(operationSlug) || tagSlug;
 ---
 
 <div class="tryit-page sl-markdown-content">
@@ -18,6 +14,9 @@ const preferredTag = getOperationPreferredTag(operationSlug) || tagSlug;
   </AnchorHeading>
   <p class="tryit-page__intro">
     This page hydrates on the client to keep builds fast. If you don’t see the interactive form, enable JavaScript and reload.
+  </p>
+  <p class="tryit-page__hint">
+    Looking for another endpoint? <a href={`/${configuredSlug}/`}>Return to the API reference</a>.
   </p>
   <div id="tryit-root" class="tryit-page__client">
     <noscript>
@@ -29,13 +28,7 @@ const preferredTag = getOperationPreferredTag(operationSlug) || tagSlug;
 <script type="module">
   import("../runtime/try-it-client.js").then((mod) => {
     if (!mod || typeof mod.mountTryIt !== 'function') return;
-    mod.mountTryIt({
-      rootId: 'tryit-root',
-      tagSlug: ${JSON.stringify(tagSlug)},
-      operationSlug: ${JSON.stringify(operationSlug)},
-      preferredTag: ${JSON.stringify(preferredTag)},
-      baseSlug: ${JSON.stringify(configuredSlug)},
-    });
+    mod.mountTryIt({ rootId: 'tryit-root' });
   }).catch((error) => {
     console.error('Failed to bootstrap Try It form', error);
   });
@@ -57,6 +50,11 @@ const preferredTag = getOperationPreferredTag(operationSlug) || tagSlug;
   color: var(--color-muted-fg);
 }
 
+.tryit-page__hint {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
 .tryit-page__client {
   min-height: 6rem;
   border: 1px dashed var(--color-border);
@@ -66,5 +64,207 @@ const preferredTag = getOperationPreferredTag(operationSlug) || tagSlug;
   align-items: center;
   justify-content: center;
   text-align: center;
+}
+
+.tryit-loading,
+.tryit-error {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.tryit-error {
+  color: var(--color-danger, #e03131);
+  font-weight: 600;
+}
+
+.tryit {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.tryit-header {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+.tryit-method {
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  background: var(--color-bg-muted, var(--color-bg-selected));
+}
+
+.tryit-path {
+  font-family: var(--font-mono, ui-monospace);
+  font-size: 0.9rem;
+}
+
+.tryit-lead {
+  margin: 0;
+  color: var(--color-muted-fg);
+}
+
+.tryit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.tryit-field,
+.tryit-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.tryit-fieldset {
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  padding: 1rem;
+}
+
+.tryit-fieldset legend {
+  padding: 0 0.25rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.tryit-label {
+  font-weight: 600;
+}
+
+.tryit-input,
+.tryit-field select,
+.tryit-input--textarea {
+  font: inherit;
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.6rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+}
+
+.tryit-input--textarea {
+  min-height: 10rem;
+  font-family: var(--font-mono, ui-monospace);
+  resize: vertical;
+}
+
+.tryit-input-group {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.tryit-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--color-muted-fg);
+}
+
+.tryit-required {
+  margin-left: 0.25rem;
+  color: var(--color-primary);
+}
+
+.tryit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.tryit-button {
+  border-radius: 0.6rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-muted, var(--color-bg));
+  padding: 0.55rem 1.1rem;
+  font: inherit;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease;
+}
+
+.tryit-button:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 60%, transparent);
+  transform: translateY(-1px);
+}
+
+.tryit-button--primary {
+  background: var(--color-primary);
+  color: var(--color-on-primary, #fff);
+  border-color: var(--color-primary);
+}
+
+.tryit-button--primary[disabled] {
+  opacity: 0.65;
+  cursor: progress;
+}
+
+.tryit-response {
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  background: var(--color-bg-muted, var(--color-bg));
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.tryit-response-meta {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  font-weight: 600;
+}
+
+.tryit-response-body {
+  margin: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 0.6rem;
+  padding: 0.75rem;
+  background: var(--color-bg);
+  font-family: var(--font-mono, ui-monospace);
+  max-height: 26rem;
+  overflow: auto;
+}
+
+.tryit-response-error {
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.6rem;
+  background: color-mix(in srgb, var(--color-danger, #e03131) 12%, transparent);
+  color: var(--color-danger, #e03131);
+  font-weight: 600;
+}
+
+.tryit-security {
+  border: 1px dashed var(--color-border);
+  border-radius: 0.6rem;
+  padding: 0.75rem 1rem;
+  background: var(--color-bg-muted, var(--color-bg));
+}
+
+.tryit-security ul {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.tryit-security li {
+  font-size: 0.9rem;
+}
+
+.tryit-field--compact {
+  margin-bottom: 0.5rem;
+}
+
+@media (max-width: 48rem) {
+  .tryit-input-group {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .tryit-button {
+    width: 100%;
+  }
 }
 </style>

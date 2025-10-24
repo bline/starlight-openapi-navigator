@@ -155,7 +155,7 @@ function createIntegration(resolvedOptions) {
   const writeSpecModule = async (spec) => {
     if (!specModulePath || !codegenDirPath) return;
 
-    const { manifest, chunks, operationChunkLookup, schemaDefinitions } = createRuntimeSpecArtifacts(spec);
+    const { manifest, chunks, operationChunkLookup } = createRuntimeSpecArtifacts(spec);
 
     const specDir = path.dirname(specModulePath);
     const chunksDir = path.join(specDir, 'chunks');
@@ -183,19 +183,6 @@ function createIntegration(resolvedOptions) {
     });
     await Promise.all(chunkFileWrites);
 
-    const schemaChunkFileName = 'schema-definitions.mjs';
-    const schemaChunkPath = path.join(chunksDir, schemaChunkFileName);
-    const hasSchemaDefinitions =
-      schemaDefinitions && typeof schemaDefinitions === 'object' && Object.keys(schemaDefinitions).length > 0;
-    if (hasSchemaDefinitions) {
-      const schemaSource =
-        `export const schemas = ${JSON.stringify(schemaDefinitions)};\n` +
-        `export default schemas;\n`;
-      await fs.writeFile(schemaChunkPath, schemaSource, 'utf8');
-    } else {
-      await fs.rm(schemaChunkPath, { force: true });
-    }
-
     const moduleSource = [
       `const manifest = ${JSON.stringify(manifest)};`,
       `const chunkLoaders = {`,
@@ -206,9 +193,6 @@ function createIntegration(resolvedOptions) {
       `const chunkIdToTag = ${JSON.stringify(chunkIdToTag)};`,
       `const chunkCache = new Map();`,
       `const chunkPromises = new Map();`,
-      `const schemaLoader = ${hasSchemaDefinitions ? `() => import("./chunks/${schemaChunkFileName}")` : 'null'};`,
-      `let schemaCache = null;`,
-      `let schemaPromise = null;`,
       `async function loadChunk(chunkId) {`,
       `  if (!chunkId) return null;`,
       `  if (chunkCache.has(chunkId)) return chunkCache.get(chunkId);`,
@@ -263,20 +247,6 @@ function createIntegration(resolvedOptions) {
       `  const chunkId = operationChunkLookup[operationSlug];`,
       `  if (!chunkId) return null;`,
       `  return chunkIdToTag[chunkId] ?? null;`,
-      `}`,
-      `export async function loadSchemaDefinitions() {`,
-      `  if (schemaCache) return schemaCache;`,
-      `  if (!schemaLoader) return {};`,
-      `  if (!schemaPromise) {`,
-      `    schemaPromise = schemaLoader().then((mod) => mod.schemas || mod.default || {});`,
-      `  }`,
-      `  schemaCache = await schemaPromise;`,
-      `  return schemaCache;`,
-      `}`,
-      `export async function loadSchemaDefinition(name) {`,
-      `  if (!name) return undefined;`,
-      `  const definitions = await loadSchemaDefinitions();`,
-      `  return definitions ? definitions[name] : undefined;`,
       `}`,
       `export const spec = manifest;`,
       `export const manifestData = manifest;`,
@@ -1042,16 +1012,7 @@ function createRuntimeSpecArtifacts(spec) {
   const operationChunkLookup = {};
   const manifestOperations = [];
   const seenOperationSlugs = new Set();
-  const schemaDefinitions = {};
   const trimmedSchemas = [];
-
-  const addSchemaDefinition = (name, schema) => {
-    if (typeof name !== 'string' || !name) return;
-    if (!isPlainObject(schema)) return;
-    if (!schemaDefinitions[name]) {
-      schemaDefinitions[name] = schema;
-    }
-  };
 
   const sourceTags = Array.isArray(spec.tags) ? spec.tags : [];
   sourceTags.forEach((tag) => {
@@ -1120,16 +1081,6 @@ function createRuntimeSpecArtifacts(spec) {
         description: entry.description,
         extensions: entry.extensions,
       });
-      if (isPlainObject(entry.schema)) {
-        addSchemaDefinition(entry.name, entry.schema);
-      }
-    });
-  }
-
-  const documentSchemas = spec?.document?.components?.schemas;
-  if (documentSchemas && typeof documentSchemas === 'object') {
-    Object.entries(documentSchemas).forEach(([name, schema]) => {
-      addSchemaDefinition(name, schema);
     });
   }
 
@@ -1147,7 +1098,6 @@ function createRuntimeSpecArtifacts(spec) {
     manifest,
     chunks,
     operationChunkLookup,
-    schemaDefinitions,
   };
 }
 
