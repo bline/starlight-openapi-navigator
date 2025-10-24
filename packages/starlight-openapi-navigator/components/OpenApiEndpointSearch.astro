@@ -1,4 +1,6 @@
 ---
+import { stripHtml } from '../runtime/text.js';
+
 const {
   operations = [],
   inputId = 'endpoint-search',
@@ -16,14 +18,15 @@ const sanitizedOperations = Array.isArray(operations)
         href: operation.href,
         method: typeof operation.method === 'string' ? operation.method : '',
         path: typeof operation.path === 'string' ? operation.path : '',
-        summary: typeof operation.summary === 'string' ? operation.summary : '',
-        tagName: typeof operation.tagName === 'string' ? operation.tagName : '',
+        summary: stripHtml(operation.summary),
+        tagName: stripHtml(operation.tagName),
         deprecated: Boolean(operation.deprecated),
       }))
   : [];
 
 const datasetId = `${inputId}-dataset`;
 const resultsId = `${inputId}-results`;
+const maxResultsNumber = Number.isFinite(Number(maxResults)) ? Number(maxResults) : 12;
 
 const serializeForScript = (value) => {
   try {
@@ -32,14 +35,16 @@ const serializeForScript = (value) => {
     return '[]';
   }
 };
-
-const datasetIdLiteral = JSON.stringify(datasetId);
-const inputIdLiteral = JSON.stringify(inputId);
-const resultsIdLiteral = JSON.stringify(resultsId);
-const maxResultsLiteral = Number.isFinite(Number(maxResults)) ? Number(maxResults) : 12;
 ---
 
-<div class="endpoint-search" data-endpoint-search-root>
+<div
+  class="endpoint-search"
+  data-endpoint-search-root
+  data-endpoint-search-input-id={inputId}
+  data-endpoint-search-results-id={resultsId}
+  data-endpoint-search-dataset-id={datasetId}
+  data-endpoint-search-max-results={maxResultsNumber}
+>
   <label class="endpoint-search__label" for={inputId}>{label}</label>
   <div class="endpoint-search__input">
     <input
@@ -62,13 +67,27 @@ const maxResultsLiteral = Number.isFinite(Number(maxResults)) ? Number(maxResult
     set:html={serializeForScript(sanitizedOperations)}
   ></script>
   <script type="module">
-    const MAX_RESULTS = {maxResultsLiteral};
-    const datasetEl = document.getElementById({datasetIdLiteral});
-    const input = document.getElementById({inputIdLiteral});
-    const resultsList = document.getElementById({resultsIdLiteral});
-    if (!datasetEl || !input || !resultsList) {
-      console.warn('starlight-openapi-navigator: endpoint search markup missing expected elements.');
-    } else {
+    const roots = document.querySelectorAll('[data-endpoint-search-root]');
+    roots.forEach((root) => {
+      if (root.dataset.endpointSearchInitialized === 'true') {
+        return;
+      }
+      root.dataset.endpointSearchInitialized = 'true';
+
+      const datasetId = root.dataset.endpointSearchDatasetId;
+      const inputId = root.dataset.endpointSearchInputId;
+      const resultsId = root.dataset.endpointSearchResultsId;
+      const datasetEl = datasetId ? document.getElementById(datasetId) : null;
+      const input = inputId ? document.getElementById(inputId) : null;
+      const resultsList = resultsId ? document.getElementById(resultsId) : null;
+      const parsedMax = Number(root.dataset.endpointSearchMaxResults);
+      const MAX_RESULTS = Number.isFinite(parsedMax) ? parsedMax : 12;
+
+      if (!datasetEl || !input || !resultsList) {
+        console.warn('starlight-openapi-navigator: endpoint search markup missing expected elements.');
+        return;
+      }
+
       let matches = [];
       let activeIndex = -1;
       let operations = [];
@@ -252,7 +271,7 @@ const maxResultsLiteral = Number.isFinite(Number(maxResults)) ? Number(maxResult
       if (typeof window !== 'undefined') {
         window.addEventListener('pageshow', () => clearResults());
       }
-    }
+    });
   </script>
 </div>
 

@@ -5,6 +5,7 @@ import '../runtime/theme.css';
 import { DEFAULT_BASE_SLUG } from '../runtime/config.js';
 import { buildOperationIndex } from '../runtime/operations.js';
 import { resolveEndpointUIMode } from '../runtime/endpoint-ui.js';
+import { stripHtml } from '../runtime/text.js';
 import OpenApiEndpointSearch from './OpenApiEndpointSearch.astro';
 
 const extractSecuritySchemes = (raw) => {
@@ -28,7 +29,7 @@ const extractSecuritySchemes = (raw) => {
       key,
       type,
       typeLabel,
-      description: scheme.description || '',
+      description: stripHtml(scheme.description),
       hint: hintParts.join(' • '),
     };
   });
@@ -55,7 +56,7 @@ const tagGroups = Array.isArray(spec.tags)
               slug: operation.slug,
               method: (operation.method || '').toUpperCase(),
               path: operation.path,
-              summary: operation.summary,
+              summary: stripHtml(operation.summary),
               deprecated: Boolean(operation.deprecated),
             }))
             .filter((operation) => operation.slug && operation.path)
@@ -77,7 +78,7 @@ const showSearch = resolvedEndpointUI === 'search' && hasOperations;
 
 <div class="api-overview sl-markdown-content">
   {info.description && (
-    <p class="lead">{info.description}</p>
+    <p class="lead">{stripHtml(info.description)}</p>
   )}
 
   <div class="api-overview__stats">
@@ -102,7 +103,7 @@ const showSearch = resolvedEndpointUI === 'search' && hasOperations;
         {servers.map((server) => (
           <li>
             <code>{server.url}</code>
-            {server.description && <span class="description">{server.description}</span>}
+            {server.description && <span class="description">{stripHtml(server.description)}</span>}
           </li>
         ))}
       </ul>
@@ -146,7 +147,7 @@ const showSearch = resolvedEndpointUI === 'search' && hasOperations;
                 <h3 class="name">{getTagDisplayName(tag)}</h3>
                 <span class="meta">{operations.length} {operations.length === 1 ? 'operation' : 'operations'}</span>
               </header>
-              {tag.description && <p class="summary">{tag.description}</p>}
+              {tag.description && <p class="summary">{stripHtml(tag.description)}</p>}
               <ul class="api-overview__operation-list">
                 {operations.map((operation) => (
                   <li>

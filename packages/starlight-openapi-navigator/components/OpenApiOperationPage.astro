@@ -11,6 +11,7 @@ import OpenApiEndpointSearch from './OpenApiEndpointSearch.astro';
 import { DEFAULT_BASE_SLUG } from '../runtime/config.js';
 import { buildOperationIndex } from '../runtime/operations.js';
 import { resolveEndpointUIMode } from '../runtime/endpoint-ui.js';
+import { stripHtml } from '../runtime/text.js';
 
 const { tagSlug, operationSlug } = Astro.props;
 const tag = spec.tags?.find((entry) => entry.slug === tagSlug);
@@ -101,7 +102,12 @@ const tryItConfig = selectedOperation
   : null;
 
 function prepareOperation(operation) {
-  const parameters = (operation.parameters || []).filter((param) => param && param.name && param.in);
+  const parameters = (operation.parameters || [])
+    .filter((param) => param && param.name && param.in)
+    .map((param) => ({
+      ...param,
+      description: stripHtml(param?.description),
+    }));
   const codeSampleGroups = (operation.codeSampleGroups || [])
     .map((group) => ({
       ...group,
@@ -118,12 +124,25 @@ function prepareOperation(operation) {
 
   const responseEntries = Object.entries(operation.responses || {}).map(([status, response]) => ({
     status,
-    response,
+    response: response
+      ? {
+          ...response,
+          description: stripHtml(response.description),
+        }
+      : response,
     exampleGroups: responseExamplesByStatus.get(status) || [],
   }));
 
   return {
     ...operation,
+    summary: stripHtml(operation.summary),
+    description: stripHtml(operation.description),
+    requestBody: operation.requestBody
+      ? {
+          ...operation.requestBody,
+          description: stripHtml(operation.requestBody.description),
+        }
+      : operation.requestBody,
     parameters,
     codeSampleGroups,
     requestBodyExamples,
@@ -432,7 +451,7 @@ const formatStatusLabel = (code) => {
   return String(code);
 };
 
-const renderParamDescription = (param) => param?.description || '';
+const renderParamDescription = (param) => stripHtml(param?.description);
 
 function groupResponseExamples(examples) {
   const map = new Map();
@@ -464,7 +483,7 @@ function getOperationServers(operation, spec) {
         augmented.push({
           url: proxyEntry.contextPath,
           description: server.description
-            ? `${server.description} (proxied)`
+            ? `${stripHtml(server.description)} (proxied)`
             : `Local proxy → ${proxyEntry.target}${proxyEntry.rewritePath ?? ''}`,
           originalUrl: server.url,
           isProxy: true,
@@ -477,7 +496,7 @@ function getOperationServers(operation, spec) {
 
   return servers.map((server) => ({
     url: server.url || '',
-    description: server.description || '',
+    description: stripHtml(server.description),
     originalUrl: server.originalUrl || server.url || '',
     isProxy: Boolean(server.isProxy),
   }));
@@ -507,7 +526,7 @@ function buildSecurityDefinitions(operation) {
         in: scheme.in,
         scheme: scheme.scheme,
         bearerFormat: scheme.bearerFormat,
-        description: scheme.description,
+        description: stripHtml(scheme.description),
         scopes: Array.isArray(value) ? value : [],
       });
       seen.add(schemeKey);
@@ -565,7 +584,7 @@ function buildTryItConfig(operation, servers, bodyOptions) {
     servers: servers
       .map((server) => ({
         url: server?.url || '',
-        description: server?.description || '',
+        description: stripHtml(server?.description),
         originalUrl: server?.originalUrl || '',
         isProxy: Boolean(server?.isProxy),
       }))
@@ -574,7 +593,7 @@ function buildTryItConfig(operation, servers, bodyOptions) {
       name: param?.name,
       location: param?.in,
       required: Boolean(param?.required),
-      description: param?.description || '',
+      description: stripHtml(param?.description),
       example: formatExampleValue(getParameterExample(param)),
     })),
     body: bodyOptions.map((option) => ({
@@ -967,7 +986,7 @@ const resolveSchemaReference = (ref) => {
               ))}
             </ul>
             {selectedOperation.requestBody?.description && (
-              <p>{selectedOperation.requestBody.description}</p>
+              <p>{stripHtml(selectedOperation.requestBody.description)}</p>
             )}
             {selectedOperation.requestBodyExamples.length > 0 && (
               <div class="api-operation__examples">
@@ -985,7 +1004,7 @@ const resolveSchemaReference = (ref) => {
                           <Code code={example.value} lang={group.syntax} />
                           {(example.description || example.externalValue) && (
                             <p class="api-operation__example-note">
-                              {example.description}
+                              {stripHtml(example.description)}
                               {example.externalValue && (
                                 <>
                                   {example.description ? ' ' : ''}
@@ -1025,7 +1044,7 @@ const resolveSchemaReference = (ref) => {
                 <li>
                   <div class="api-operation__response-heading">
                     <strong>{formatStatusLabel(status)}</strong>
-                    {response?.description && <span> — {response.description}</span>}
+                    {response?.description && <span> — {stripHtml(response.description)}</span>}
                   </div>
                   {exampleGroups.length > 0 && (
                     <div class="api-operation__examples">
@@ -1074,7 +1093,7 @@ const resolveSchemaReference = (ref) => {
                                 <Code code={example.value} lang={group.syntax} />
                                 {(example.description || example.externalValue) && (
                                   <p class="api-operation__example-note">
-                                    {example.description}
+                                    {stripHtml(example.description)}
                                     {example.externalValue && (
                                       <>
                                         {example.description ? ' ' : ''}
