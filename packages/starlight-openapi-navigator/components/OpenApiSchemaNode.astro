@@ -1,4 +1,5 @@
 ---
+import { renderMarkdownLinks } from '../runtime/text.js';
 import '../runtime/theme.css';
 
 const {
@@ -69,6 +70,7 @@ const baseTypeLabel = type || 'any';
 const typeLabel = schemaFormat ? `${baseTypeLabel} (${schemaFormat})` : baseTypeLabel;
 
 const hasDescription = typeof normalizedSchema?.description === 'string' && normalizedSchema.description.trim().length > 0;
+const descriptionHtml = hasDescription ? renderMarkdownLinks(normalizedSchema.description) : '';
 const hasEnum = Array.isArray(normalizedSchema?.enum) && normalizedSchema.enum.length > 0;
 const hasDefault = normalizedSchema?.default !== undefined;
 const hasExamples = examples.length > 0;
@@ -260,8 +262,8 @@ const isRootNode = depth === 0 && name === null;
           </span>
         </summary>
         <div class="schema-node__content">
-          {normalizedSchema?.description && (
-            <p class="schema-node__description">{normalizedSchema.description}</p>
+          {descriptionHtml && (
+            <p class="schema-node__description" set:html={descriptionHtml}></p>
           )}
 
           {Array.isArray(normalizedSchema?.enum) && normalizedSchema.enum.length > 0 && (

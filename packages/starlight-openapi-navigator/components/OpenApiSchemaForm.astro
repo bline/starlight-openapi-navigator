@@ -1,4 +1,6 @@
 ---
+import { escapeHtml, renderMarkdownLinks } from '../runtime/text.js';
+
 const {
   fields = [],
   optionId = 'body',
@@ -10,15 +12,6 @@ function isPlainObject(value) {
 }
 
 const rootValue = isPlainObject(initialValue) ? initialValue : {};
-
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
 
 function toPathKey(path) {
   return Array.isArray(path) && path.length ? path.join('.') : '';
@@ -88,7 +81,8 @@ function renderPrimitive(field) {
   const label = formatLabel(field.name || field.path.at(-1) || 'Field');
   const value = primitiveInitialValue(field);
   const pathKey = toPathKey(field.path);
-  const description = field.description ? `<p class="api-tryit__hint">${escapeHtml(field.description)}</p>` : '';
+  const descriptionHtml = renderMarkdownLinks(field.description);
+  const description = descriptionHtml ? `<p class="api-tryit__hint">${descriptionHtml}</p>` : '';
   const requiredAttr = field.required ? ' required' : '';
   const requiredBadge = field.required ? '<span class="api-tryit__required">*</span>' : '';
 
@@ -178,9 +172,9 @@ function renderArray(field) {
   const pathKey = toPathKey(field.path);
   const requiredAttr = field.required ? ' required' : '';
   const requiredBadge = field.required ? '<span class="api-tryit__required">*</span>' : '';
-  const description = field.description
-    ? escapeHtml(field.description)
-    : 'Enter one value per line. The payload will be serialised as an array.';
+  const descriptionHtml = renderMarkdownLinks(field.description);
+  const description = descriptionHtml ||
+    escapeHtml('Enter one value per line. The payload will be serialised as an array.');
   const itemType = field.itemType ? ` data-schema-item-type="${escapeHtml(field.itemType)}"` : '';
   const placeholder = field.enum?.length
     ? field.enum.map((item) => normaliseString(item)).join('\n')
@@ -223,7 +217,8 @@ function renderField(field) {
   if (!field) return '';
   if (field.kind === 'object') {
     const legend = formatLabel(field.name || field.path.at(-1) || 'Object');
-    const description = field.description ? `<p class="api-tryit__hint">${escapeHtml(field.description)}</p>` : '';
+    const descriptionHtml = renderMarkdownLinks(field.description);
+    const description = descriptionHtml ? `<p class="api-tryit__hint">${descriptionHtml}</p>` : '';
     const children = Array.isArray(field.children) && field.children.length
       ? field.children.map(renderField).join('')
       : '<p class="api-tryit__hint">No documented properties for this object.</p>';

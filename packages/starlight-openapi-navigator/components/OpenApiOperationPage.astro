@@ -10,7 +10,8 @@ import OpenApiEndpointSearch from './OpenApiEndpointSearch.astro';
 import { DEFAULT_BASE_SLUG } from '../runtime/config.js';
 import { buildOperationIndex } from '../runtime/operations.js';
 import { resolveEndpointUIMode } from '../runtime/endpoint-ui.js';
-import { stripHtml } from '../runtime/text.js';
+import { stripHtml, renderMarkdownLinks } from '../runtime/text.js';
+import '../runtime/try-it.css';
 
 const { tagSlug, operationSlug } = Astro.props;
 const tag = spec.tags?.find((entry) => entry.slug === tagSlug);
@@ -25,17 +26,17 @@ const resolvedEndpointUI =
     : resolveEndpointUIMode(configuredEndpointUI, spec?.stats?.operations || 0);
 const operationsIndex = buildOperationIndex(spec, configuredSlug);
 const showSearch = resolvedEndpointUI === 'search' && operationsIndex.length > 0;
-
 const schemaSlugMap = buildSchemaSlugMap(spec);
-const SUPPORTED_PRIMITIVE_TYPES = new Set(['string', 'number', 'integer', 'boolean']);
-const resolvedTagSlug = typeof tagSlug === 'string' && tagSlug.length ? tagSlug : tag?.slug;
+const initialTagSlug = typeof tagSlug === 'string' && tagSlug.length ? tagSlug : tag?.slug;
 let selectedOperation = null;
+let fetchedTagSlug = initialTagSlug;
 if (operationSlug) {
-  let remoteOperation = await loadOperation(operationSlug, resolvedTagSlug);
+  let remoteOperation = await loadOperation(operationSlug, fetchedTagSlug);
   if (!remoteOperation) {
     const fallbackTag = getOperationPreferredTag(operationSlug);
-    if (fallbackTag && fallbackTag !== resolvedTagSlug) {
+    if (fallbackTag && fallbackTag !== fetchedTagSlug) {
       remoteOperation = await loadOperation(operationSlug, fallbackTag);
+      fetchedTagSlug = fallbackTag;
     }
   }
   if (remoteOperation) {
@@ -43,12 +44,35 @@ if (operationSlug) {
   }
 }
 
+const resolvedTagSlug = (fetchedTagSlug && fetchedTagSlug.trim())
+  || selectedOperation?.tags?.find((tag) => !tag.isFallback)?.slug
+  || selectedOperation?.tags?.[0]?.slug
+  || spec.tags?.[0]?.slug
+  || 'untagged';
+
+const operationHeadingId = selectedOperation?.slug || operationSlug || 'operation';
+
+const tryItEnabled = generatedConfig?.tryIt?.enabled !== false;
+
+const tryItHref = tryItEnabled && selectedOperation
+  ? `/${configuredSlug}/try/?operation=${encodeURIComponent(selectedOperation.slug)}&tag=${encodeURIComponent(resolvedTagSlug)}`
+  : '';
+
+const tryItAnchorId = selectedOperation ? `${selectedOperation.slug}-try-it` : 'try-it';
+const tryItPanelStorageKey = !tryItEnabled && selectedOperation ? `${selectedOperation.slug}:try-it` : '';
+const preferredTagForTryIt =
+  selectedOperation?.tags?.find((entry) => !entry.isFallback)?.slug
+    || selectedOperation?.tags?.[0]?.slug
+    || resolvedTagSlug;
+const tryItRootId = selectedOperation ? `${selectedOperation.slug}-tryit-root` : 'tryit-root';
+
 const panelIds = selectedOperation
   ? {
       parameters: `${selectedOperation.slug}-parameters`,
       requestBody: `${selectedOperation.slug}-request-body`,
       responses: `${selectedOperation.slug}-responses`,
       codeSamples: `${selectedOperation.slug}-code-samples`,
+      tryIt: tryItAnchorId,
     }
   : {};
 
@@ -61,16 +85,13 @@ const panelStorageKeys = selectedOperation
     }
   : {};
 
-const tryItHref = selectedOperation
-  ? `/${configuredSlug}/try/?operation=${encodeURIComponent(selectedOperation.slug)}${tag?.slug || resolvedTagSlug ? `&tag=${encodeURIComponent(tag?.slug || resolvedTagSlug)}` : ''}`
-  : '';
-
 function prepareOperation(operation) {
   const parameters = (operation.parameters || [])
     .filter((param) => param && param.name && param.in)
     .map((param) => ({
       ...param,
       description: stripHtml(param?.description),
+      descriptionHtml: renderMarkdownLinks(param?.description),
     }));
   const codeSampleGroups = (operation.codeSampleGroups || [])
     .map((group) => ({
@@ -92,6 +113,7 @@ function prepareOperation(operation) {
       ? {
           ...response,
           description: stripHtml(response.description),
+          descriptionHtml: renderMarkdownLinks(response.description),
         }
       : response,
     exampleGroups: responseExamplesByStatus.get(status) || [],
@@ -101,10 +123,12 @@ function prepareOperation(operation) {
     ...operation,
     summary: stripHtml(operation.summary),
     description: stripHtml(operation.description),
+    descriptionHtml: renderMarkdownLinks(operation.description),
     requestBody: operation.requestBody
       ? {
           ...operation.requestBody,
           description: stripHtml(operation.requestBody.description),
+          descriptionHtml: renderMarkdownLinks(operation.requestBody.description),
         }
       : operation.requestBody,
     parameters,
@@ -115,6 +139,28 @@ function prepareOperation(operation) {
     responseEntries,
   };
 }
+
+function buildSchemaSlugMap(currentSpec) {
+  const map = new Map();
+  if (Array.isArray(currentSpec?.schemas)) {
+    currentSpec.schemas.forEach((entry) => {
+      if (entry && typeof entry.name === 'string') {
+        const slug = typeof entry.slug === 'string' ? entry.slug : entry.name.toLowerCase();
+        map.set(entry.name, slug);
+      }
+    });
+  }
+  return map;
+}
+
+const resolveSchemaReference = (ref) => {
+  if (typeof ref !== 'string') return undefined;
+  const match = ref.match(/#\/components\/schemas\/(.+)$/);
+  if (!match) return undefined;
+  const name = match[1];
+  const slug = schemaSlugMap.get(name) ?? name.toLowerCase();
+  return { name, slug };
+};
 
 const formatMethod = (method) => method?.toUpperCase?.() ?? '';
 const formatParamType = (param) => {
@@ -148,7 +194,7 @@ const formatStatusLabel = (code) => {
   return String(code);
 };
 
-const renderParamDescription = (param) => stripHtml(param?.description);
+const renderParamDescription = (param) => param?.descriptionHtml || '';
 
 function groupResponseExamples(examples) {
   const map = new Map();
@@ -159,6 +205,60 @@ function groupResponseExamples(examples) {
   });
   return map;
 }
+
+
+
+function buildSecurityDefinitions(operation) {
+  const specSecuritySchemes = spec?.document?.components?.securitySchemes || {};
+  const requirements = Array.isArray(operation?.security) && operation.security.length
+    ? operation.security
+    : Array.isArray(spec?.document?.security) && spec.document.security.length
+      ? spec.document.security
+      : [];
+
+  const seen = new Set();
+  const resolved = [];
+
+  requirements.forEach((requirement) => {
+    if (!requirement || typeof requirement !== 'object') return;
+    Object.entries(requirement).forEach(([schemeKey, value]) => {
+      if (!schemeKey || seen.has(schemeKey)) return;
+      const scheme = specSecuritySchemes[schemeKey];
+      if (!scheme) return;
+      resolved.push({
+        key: schemeKey,
+        type: scheme.type,
+        name: scheme.name,
+        in: scheme.in,
+        scheme: scheme.scheme,
+        bearerFormat: scheme.bearerFormat,
+        description: stripHtml(scheme.description),
+        descriptionHtml: renderMarkdownLinks(scheme.description),
+        scopes: Array.isArray(value) ? value : [],
+      });
+      seen.add(schemeKey);
+    });
+  });
+
+  return resolved;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 const LANGUAGE_ICON_MAP = new Map(
@@ -190,21 +290,41 @@ const LANGUAGE_ICON_MAP = new Map(
     ts: 'seti:typescript',
     python: 'seti:python',
     py: 'seti:python',
-   value.trim().toLowerCase() : '';
+    go: 'seti:go',
+    golang: 'seti:go',
+    java: 'seti:java',
+    kotlin: 'seti:kotlin',
+    csharp: 'seti:c-sharp',
+    json: 'seti:json',
+    yaml: 'seti:yml',
+    yml: 'seti:yml',
+    xml: 'seti:xml',
+    http: 'lucide:network',
+  })
+);
+
+function normalizeKey(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
 
 function getLanguageIcon(language, fallback) {
   const key = normalizeKey(language);
   if (LANGUAGE_ICON_MAP.has(key)) return LANGUAGE_ICON_MAP.get(key);
   const fallbackKey = normalizeKey(fallback);
-  if (LANGUAGE_ICON_MAP.has(fallbackKey)) return LANGUAGE_ICON_MAP.get(falKEY = 'starlight-openapi-navigator-api-key';
+  if (LANGUAGE_ICON_MAP.has(fallbackKey)) return LANGUAGE_ICON_MAP.get(fallbackKey);
+  return undefined;
+}
 
-const resolveSchemaReference = (ref) => {
-  if (typeof ref !== 'string') return undefined;
-  const match = ref.match(/#\/components\/schemas\/(.+)$/);
-  if (!match) return undefined;
-  const name = match[1];
-  const slug = schemaSlugMap.get(name) ??e__missing">
+function getTabsSyncKey(prefix, operationSlug, extra = '') {
+  const base = [prefix, operationSlug, extra].filter(Boolean).join('-');
+  return base.replace(/[^a-z0-9-]+/gi, '-');
+}
+
+const LANGUAGE_STORAGE_KEY = 'starlight-preferred-lang';
+---
+
+{!tag && (
+  <div class="api-operation-page__missing">
     {showSearch && (
       <div class="api-operation-page__search">
         <OpenApiEndpointSearch
@@ -242,41 +362,28 @@ const resolveSchemaReference = (ref) => {
 
 {tag && selectedOperation && (
   <div class="api-operation-page">
-    {showSearch && (
-      <div class="api-operation__search">
-        <OpenApiEndpointSearch
-          operations={operationsIndex}
-          inputId="operation-endpoint-search"
-          label="Jump to an endpoint"
-          helperText="Search to quickly navigate to another endpoint."
-        />
-      </div>
-    )}
-    <section id={selectedOperation.slug} class="api-operation" data-operation-slug={selectedOperation.slug}>
+    <section class="api-operation">
       <header class="api-operation__header">
-        <AnchorHeading level="2" id={selectedOperation.slug} class="api-operation__title">
-          <span class={`api-operation__method api-operation__method--${selectedOperation.method}`}>
-            {formatMethod(selectedOperation.method)}
-          </span>
-          <code class="api-operation__path">{selectedOperation.path}</code>
-          {selectedOperation.deprecated && <span class="api-operation__badge">Deprecated</span>}
+        <AnchorHeading level="2" id={operationHeadingId} class="api-operation__title">
+          {typeof selectedOperation.method === 'string' && selectedOperation.method.length > 0 && (
+            <span class={`api-operation__method api-operation__method--${selectedOperation.method.toLowerCase()}`}>
+              {formatMethod(selectedOperation.method)}
+            </span>
+          )}
+          {typeof selectedOperation.path === 'string' && selectedOperation.path.length > 0 && (
+            <code class="api-operation__path">{selectedOperation.path}</code>
+          )}
         </AnchorHeading>
-        {selectedOperation.tags?.length > 0 && (
-          <ul class="api-operation__tag-list">
-            {selectedOperation.tags.map((tagRef) => (
-              <li>{tagRef.name}</li>
-            ))}
-          </ul>
+        {selectedOperation.deprecated && (
+          <span class="api-operation__badge">Deprecated</span>
         )}
       </header>
 
       {selectedOperation.summary && (
         <p class="api-operation__summary">{selectedOperation.summary}</p>
       )}
-      {selectedOperation.description && (
-        <div class="api-operation__description">
-          {selectedOperation.description}
-        </div>
+      {selectedOperation.descriptionHtml && (
+        <div class="api-operation__description" set:html={selectedOperation.descriptionHtml}></div>
       )}
 
       {selectedOperation.parameters.length > 0 && (
@@ -320,7 +427,7 @@ const resolveSchemaReference = (ref) => {
                           )}
                         </td>
                         <td>{param.required ? 'Yes' : 'No'}</td>
-                        <td>{renderParamDescription(param)}</td>
+                        <td set:html={renderParamDescription(param)}></td>
                       </tr>
                     );
                   })}
@@ -356,10 +463,10 @@ const resolveSchemaReference = (ref) => {
                           ) : (
                             typeInfo.label
                           )}
-                        </span>
+                      </span>
                       </div>
                       {description && (
-                        <p class="api-operation__parameters-card-description">{description}</p>
+                        <p class="api-operation__parameters-card-description" set:html={description}></p>
                       )}
                     </li>
                   );
@@ -416,8 +523,8 @@ const resolveSchemaReference = (ref) => {
                 </li>
               ))}
             </ul>
-            {selectedOperation.requestBody?.description && (
-              <p>{stripHtml(selectedOperation.requestBody.description)}</p>
+            {selectedOperation.requestBody?.descriptionHtml && (
+              <p set:html={selectedOperation.requestBody.descriptionHtml}></p>
             )}
             {selectedOperation.requestBodyExamples.length > 0 && (
               <div class="api-operation__examples">
@@ -427,27 +534,29 @@ const resolveSchemaReference = (ref) => {
                       <h4>{group.contentType}</h4>
                     </div>
                     <Tabs syncKey={getTabsSyncKey('request', selectedOperation.slug, group.contentType)}>
-                      {group.examples.map((example) => (
-                        <TabItem
-                          label={example.label}
-                          icon={getLanguageIcon(example.language, group.syntax)}
-                        >
-                          <Code code={example.value} lang={group.syntax} />
-                          {(example.description || example.externalValue) && (
-                            <p class="api-operation__example-note">
-                              {stripHtml(example.description)}
-                              {example.externalValue && (
-                                <>
-                                  {example.description ? ' ' : ''}
+                      {group.examples.map((example) => {
+                        const descriptionHtml = renderMarkdownLinks(example.description);
+                        const hasDescription = Boolean(descriptionHtml);
+                        return (
+                          <TabItem
+                            label={example.label}
+                            icon={getLanguageIcon(example.language, group.syntax)}
+                          >
+                            <Code code={example.value} lang={group.syntax} />
+                            {(hasDescription || example.externalValue) && (
+                              <p class="api-operation__example-note">
+                                {hasDescription && <span set:html={descriptionHtml}></span>}
+                                {hasDescription && example.externalValue ? ' ' : ''}
+                                {example.externalValue && (
                                   <a href={example.externalValue} target="_blank" rel="noreferrer">
                                     View external example
                                   </a>
-                                </>
-                              )}
-                            </p>
-                          )}
-                        </TabItem>
-                      ))}
+                                )}
+                              </p>
+                            )}
+                          </TabItem>
+                        );
+                      })}
                     </Tabs>
                   </div>
                 ))}
@@ -475,7 +584,12 @@ const resolveSchemaReference = (ref) => {
                 <li>
                   <div class="api-operation__response-heading">
                     <strong>{formatStatusLabel(status)}</strong>
-                    {response?.description && <span> — {stripHtml(response.description)}</span>}
+                    {response?.descriptionHtml && (
+                      <>
+                        {' — '}
+                        <span set:html={response.descriptionHtml}></span>
+                      </>
+                    )}
                   </div>
                   {exampleGroups.length > 0 && (
                     <div class="api-operation__examples">
@@ -516,27 +630,29 @@ const resolveSchemaReference = (ref) => {
                             </h4>
                           </div>
                           <Tabs syncKey={getTabsSyncKey(status, selectedOperation.slug, group.contentType)}>
-                            {group.examples.map((example) => (
-                              <TabItem
-                                label={example.label}
-                                icon={getLanguageIcon(example.language || group.syntax, group.syntax)}
-                              >
-                                <Code code={example.value} lang={group.syntax} />
-                                {(example.description || example.externalValue) && (
-                                  <p class="api-operation__example-note">
-                                    {stripHtml(example.description)}
-                                    {example.externalValue && (
-                                      <>
-                                        {example.description ? ' ' : ''}
+                            {group.examples.map((example) => {
+                              const descriptionHtml = renderMarkdownLinks(example.description);
+                              const hasDescription = Boolean(descriptionHtml);
+                              return (
+                                <TabItem
+                                  label={example.label}
+                                  icon={getLanguageIcon(example.language || group.syntax, group.syntax)}
+                                >
+                                  <Code code={example.value} lang={group.syntax} />
+                                  {(hasDescription || example.externalValue) && (
+                                    <p class="api-operation__example-note">
+                                      {hasDescription && <span set:html={descriptionHtml}></span>}
+                                      {hasDescription && example.externalValue ? ' ' : ''}
+                                      {example.externalValue && (
                                         <a href={example.externalValue} target="_blank" rel="noreferrer">
                                           View external example
                                         </a>
-                                      </>
-                                    )}
-                                  </p>
-                                )}
-                              </TabItem>
-                            ))}
+                                      )}
+                                    </p>
+                                  )}
+                                </TabItem>
+                              );
+                            })}
                           </Tabs>
                         </div>
                       ))}
@@ -583,20 +699,58 @@ const resolveSchemaReference = (ref) => {
         </details>
       )}
 
-      {selectedOperation && tryItHref && (
-        <aside class="api-operation__tryit-cta">
-          <Icon name="lucide:play" aria-hidden="true" />
-          <div class="api-operation__tryit-copy">
-            <p class="api-operation__tryit-title">Try this endpoint live</p>
-            <p class="api-operation__tryit-text">
-              Launch the interactive playground to send real requests with your credentials.
+      {!tryItEnabled && selectedOperation && (
+        <details
+          class="api-operation__panel"
+          data-panel-storage-key={tryItPanelStorageKey}
+        >
+          <summary>
+            <Icon name="lucide:play" aria-hidden="true" />
+            Try it live
+          </summary>
+          <div class="api-operation__panel-body">
+            <AnchorHeading level="3" id={panelIds.tryIt} class="api-operation__panel-title">
+              Try it live
+            </AnchorHeading>
+            <p class="api-operation__panel-lead">
+              Build and send a sample request without leaving this reference page.
             </p>
+            <div class="api-operation__tryit-inline">
+              <div class="tryit-page__client">
+                <div
+                  id={tryItRootId}
+                  data-tryit-root
+                  data-tryit-operation={selectedOperation.slug}
+                  data-tryit-tag={resolvedTagSlug}
+                  data-tryit-preferred-tag={preferredTagForTryIt}
+                >
+                  <p class="tryit-loading">Loading operation details…</p>
+                </div>
+              </div>
+            </div>
           </div>
-          <a class="api-operation__tryit-link" href={tryItHref}>
-            Open Try It →
-          </a>
-        </aside>
-      )
+        </details>
+      )}
+
+      {selectedOperation && tryItHref && tryItEnabled && (
+        <div class="api-operation__tryit-wrapper">
+          <AnchorHeading level="3" id={panelIds.tryIt} class="api-operation__panel-title">
+            Try it live
+          </AnchorHeading>
+          <aside class="api-operation__tryit-cta">
+            <Icon name="lucide:play" aria-hidden="true" />
+            <div class="api-operation__tryit-copy">
+              <p class="api-operation__tryit-title">Try this endpoint live</p>
+              <p class="api-operation__tryit-text">Launch the interactive playground to send authenticated requests without leaving the docs.</p>
+            </div>
+            <a class="api-operation__tryit-link" href={tryItHref}>Open Try It →</a>
+          </aside>
+        </div>
+      )}
+
+      {!tryItEnabled && selectedOperation && (
+        <script src="../runtime/try-it-client.js"></script>
+      )}
 
     </section>
   </div>
@@ -616,7 +770,6 @@ const resolveSchemaReference = (ref) => {
 
 .api-operation {
   border: 1px solid var(--color-border);
-  border-radius: 1rem;
   padding: 1.75rem;
   background: var(--color-bg-muted, var(--color-bg));
   display: flex;
@@ -707,6 +860,24 @@ const resolveSchemaReference = (ref) => {
   padding: 1rem 1.1rem;
 }
 
+.api-operation__panel-lead {
+  margin: 0 0 0.75rem;
+  color: var(--color-muted-fg);
+  font-size: 0.95rem;
+}
+
+.api-operation__tryit-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.api-operation__tryit-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
 .api-operation__panel table {
   width: 100%;
   border-collapse: collapse;
@@ -786,7 +957,8 @@ const resolveSchemaReference = (ref) => {
 }
 
 .api-operation__parameters-chip--optional {
-  background: var(--color-bg-selected);
+  background: var(--color-bg-muted, var(--color-bg-selected));
+  color: var(--color-muted-fg);
 }
 
 .api-operation__parameters-card-meta {
@@ -892,10 +1064,10 @@ const resolveSchemaReference = (ref) => {
   display: flex;
   align-items: center;
   gap: 1rem;
-  margin: 1.5rem 0 0;
-  padding: 1rem 1.25rem;
+  margin-top: 2rem;
+  padding: 1.1rem 1.4rem;
+  border-radius: 0.85rem;
   border: 1px solid var(--color-border);
-  border-radius: 0.75rem;
   background: var(--color-bg-muted, var(--color-bg-selected));
 }
 
@@ -907,9 +1079,9 @@ const resolveSchemaReference = (ref) => {
 }
 
 .api-operation__tryit-title {
+  margin: 0;
   font-size: 1rem;
   font-weight: 600;
-  margin: 0;
 }
 
 .api-operation__tryit-text {
@@ -923,17 +1095,18 @@ const resolveSchemaReference = (ref) => {
   align-items: center;
   justify-content: center;
   padding: 0.6rem 0.9rem;
-  border-radius: 0.6rem;
-  font-weight: 600;
+  border-radius: 0.65rem;
+  border: 1px solid var(--color-primary);
   background: var(--color-primary);
   color: var(--color-on-primary, #fff);
+  font-weight: 600;
   text-decoration: none;
-  transition: background-color 150ms ease, transform 150ms ease;
+  transition: transform 120ms ease, background-color 120ms ease;
 }
 
 .api-operation__tryit-link:hover {
   transform: translateY(-1px);
-  background: color-mix(in srgb, var(--color-primary) 85%, #0000 15%);
+  background: color-mix(in srgb, var(--color-primary) 85%, transparent);
 }
 
 @media (max-width: 48rem) {
@@ -944,7 +1117,6 @@ const resolveSchemaReference = (ref) => {
 
   .api-operation__tryit-link {
     width: 100%;
-    justify-content: center;
   }
 }
 
@@ -1016,10 +1188,10 @@ const resolveSchemaReference = (ref) => {
 
     const writeStorage = (key, value) => {
       try {
-        if (value === undefined || value === null || value === '') {
-          window.localStorage?.removeItem(key);
-        } else {
+        if (value) {
           window.localStorage?.setItem(key, value);
+        } else {
+          window.localStorage?.removeItem(key);
         }
       } catch {
         /* ignore */
@@ -1028,17 +1200,14 @@ const resolveSchemaReference = (ref) => {
 
     const normalize = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
 
-    const hydratePanelOpenState = () => {
+    const hydratePanels = () => {
       document.querySelectorAll('[data-panel-storage-key]').forEach((details) => {
         if (!(details instanceof HTMLDetailsElement)) return;
         const key = details.getAttribute('data-panel-storage-key');
         if (!key) return;
         const stored = readStorage(PANEL_STORAGE_PREFIX + key);
-        if (stored === 'open') {
-          details.open = true;
-        } else if (stored === 'closed') {
-          details.open = false;
-        }
+        if (stored === 'open') details.open = true;
+        if (stored === 'closed') details.open = false;
       });
     };
 
@@ -1056,7 +1225,6 @@ const resolveSchemaReference = (ref) => {
     };
 
     const applyLanguagePreference = (label) => {
-      if (!label) return;
       const desired = normalize(label);
       if (!desired) return;
       document.querySelectorAll('starlight-tabs[data-sync-key^="sample-"]').forEach((tabsEl) => {
@@ -1075,9 +1243,7 @@ const resolveSchemaReference = (ref) => {
 
     const hydrateLanguagePreference = () => {
       const stored = readStorage(LANGUAGE_STORAGE_KEY);
-      if (stored) {
-        applyLanguagePreference(stored);
-      }
+      if (stored) applyLanguagePreference(stored);
     };
 
     const attachLanguageListeners = () => {
@@ -1096,7 +1262,7 @@ const resolveSchemaReference = (ref) => {
     };
 
     const init = () => {
-      hydratePanelOpenState();
+      hydratePanels();
       attachPanelListeners();
       hydrateLanguagePreference();
       attachLanguageListeners();

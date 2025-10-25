@@ -24,6 +24,7 @@ export default defineConfig({
 			],
       plugins: [
         openapi({
+					tryIt: false,
           specPath: 'https://raw.githubusercontent.com/stripe/openapi/refs/heads/master/openapi/spec3.yaml',
           navigation: {
             enabled: true,

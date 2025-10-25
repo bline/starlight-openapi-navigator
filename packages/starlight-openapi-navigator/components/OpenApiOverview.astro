@@ -5,7 +5,7 @@ import '../runtime/theme.css';
 import { DEFAULT_BASE_SLUG } from '../runtime/config.js';
 import { buildOperationIndex } from '../runtime/operations.js';
 import { resolveEndpointUIMode } from '../runtime/endpoint-ui.js';
-import { stripHtml } from '../runtime/text.js';
+import { stripHtml, renderMarkdownLinks } from '../runtime/text.js';
 import OpenApiEndpointSearch from './OpenApiEndpointSearch.astro';
 
 const extractSecuritySchemes = (raw) => {
@@ -30,6 +30,7 @@ const extractSecuritySchemes = (raw) => {
       type,
       typeLabel,
       description: stripHtml(scheme.description),
+      descriptionHtml: renderMarkdownLinks(scheme.description),
       hint: hintParts.join(' • '),
     };
   });
@@ -78,7 +79,7 @@ const showSearch = resolvedEndpointUI === 'search' && hasOperations;
 
 <div class="api-overview sl-markdown-content">
   {info.description && (
-    <p class="lead">{stripHtml(info.description)}</p>
+    <p class="lead" set:html={renderMarkdownLinks(info.description)}></p>
   )}
 
   <div class="api-overview__stats">
@@ -103,7 +104,9 @@ const showSearch = resolvedEndpointUI === 'search' && hasOperations;
         {servers.map((server) => (
           <li>
             <code>{server.url}</code>
-            {server.description && <span class="description">{stripHtml(server.description)}</span>}
+            {server.description && (
+              <span class="description" set:html={renderMarkdownLinks(server.description)}></span>
+            )}
           </li>
         ))}
       </ul>
@@ -127,7 +130,7 @@ const showSearch = resolvedEndpointUI === 'search' && hasOperations;
                 <span class="type">{scheme.typeLabel}</span>
               </header>
               {scheme.hint && <p>{scheme.hint}</p>}
-              {scheme.description && <p>{scheme.description}</p>}
+              {scheme.descriptionHtml && <p set:html={scheme.descriptionHtml}></p>}
             </article>
           ))}
         </div>
@@ -147,7 +150,9 @@ const showSearch = resolvedEndpointUI === 'search' && hasOperations;
                 <h3 class="name">{getTagDisplayName(tag)}</h3>
                 <span class="meta">{operations.length} {operations.length === 1 ? 'operation' : 'operations'}</span>
               </header>
-              {tag.description && <p class="summary">{stripHtml(tag.description)}</p>}
+              {tag.description && (
+                <p class="summary" set:html={renderMarkdownLinks(tag.description)}></p>
+              )}
               <ul class="api-overview__operation-list">
                 {operations.map((operation) => (
                   <li>

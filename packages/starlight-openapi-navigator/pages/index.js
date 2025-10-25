@@ -17,6 +17,7 @@ import { DEFAULT_BASE_SLUG } from '../runtime/config.js';
  * @property {string} outputDir Directory where the base slug lives (e.g. `src/pages/api`).
  * @property {string} baseSlug
  * @property {'menu'|'search'} [endpointUI]
+ * @property {boolean} [tryItEnabled]
  */
 
 const PACKAGE_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -80,7 +81,7 @@ export async function generateOverviewPage(spec, ctx) {
  * @param {PageGenerationContext} ctx
  */
 export async function generateOperationPages(spec, ctx) {
-  const { outputDir, baseSlug, logger } = ctx;
+  const { outputDir, baseSlug, logger, tryItEnabled = true } = ctx;
   const resolvedSlug = baseSlug || DEFAULT_BASE_SLUG;
   await fs.mkdir(outputDir, { recursive: true });
 
@@ -152,39 +153,28 @@ export async function generateOperationPages(spec, ctx) {
     });
   });
 
-  writes.push(
-    fs
-      .mkdir(path.join(outputDir, '__try'), { recursive: true })
-      .then(() => {
-        const tryDir = path.join(outputDir, '__try');
-        const tryFilePath = path.join(tryDir, PAGE_FILENAME);
-        const tryFrontmatter = {
-          title: 'Try an endpoint',
-          description: 'Launch the interactive playground to send authenticated requests from your browser.',
-          slug: `${resolvedSlug}/try`,
-          sidebar: {
-            hidden: true,
-          },
-        };
-        const tryHeadings = [
-          {
-            depth: 2,
-            slug: 'try-it',
-            text: 'Try this endpoint',
-          },
-        ];
-        const trySource = buildStarlightPageSource({
-          componentName: 'OpenApiTryItPage',
-          componentFilename: TRY_IT_COMPONENT,
-          filePath: tryFilePath,
-          frontmatter: tryFrontmatter,
-          headings: tryHeadings,
-        });
-        return fs.writeFile(tryFilePath, trySource, 'utf8');
-      })
-  );
-
   await Promise.all(writes);
+
+  if (tryItEnabled) {
+    const tryDir = path.join(outputDir, 'try');
+    await fs.mkdir(tryDir, { recursive: true });
+    const tryPagePath = path.join(tryDir, PAGE_FILENAME);
+    const tryFrontmatter = {
+      title: 'Try an endpoint',
+      description: 'Launch the interactive playground to send authenticated requests from your browser.',
+      slug: `${resolvedSlug}/try`,
+      sidebar: { hidden: true },
+    };
+    const tryHeadings = [];
+    const trySource = buildStarlightPageSource({
+      componentName: 'OpenApiTryItPage',
+      componentFilename: TRY_IT_COMPONENT,
+      filePath: tryPagePath,
+      frontmatter: tryFrontmatter,
+      headings: tryHeadings,
+    });
+    await fs.writeFile(tryPagePath, trySource, 'utf8');
+  }
 }
 
 export async function generateSchemaIndexPage(spec, ctx) {
@@ -290,6 +280,27 @@ export async function generateSchemaDetailPages(spec, ctx) {
   });
 
   await Promise.all(writes);
+
+  const tryDir = path.join(outputDir, 'try');
+  await fs.mkdir(tryDir, { recursive: true });
+  const tryPagePath = path.join(tryDir, PAGE_FILENAME);
+  const tryFrontmatter = {
+    title: 'Try an endpoint',
+    description: 'Launch the interactive playground to send authenticated requests from your browser.',
+    slug: `${resolvedSlug}/try`,
+    sidebar: { hidden: true },
+  };
+  const tryHeadings = [
+    { depth: 2, slug: 'try-it', text: 'Try this endpoint' },
+  ];
+  const trySource = buildStarlightPageSource({
+    componentName: 'OpenApiTryItPage',
+    componentFilename: TRY_IT_COMPONENT,
+    filePath: tryPagePath,
+    frontmatter: tryFrontmatter,
+    headings: tryHeadings,
+  });
+  await fs.writeFile(tryPagePath, trySource, 'utf8');
 }
 
 function buildStarlightPageSource({

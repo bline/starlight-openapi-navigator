@@ -21,6 +21,8 @@ import {
  * @property {string} [baseSlug] Base docs slug for generated pages. Defaults to `api`.
  * @property {string} [outputDir] Relative path (from project root) to emit generated Astro pages. Defaults to `src/pages/<baseSlug>`.
  * @property {'auto'|'menu'|'search'} [endpointUI] Controls the endpoint browsing UI. Defaults to `auto`.
+ * @property {object|boolean} [tryIt] Controls the generated "Try it" playground. Set to `false` to disable the separate page and CTA.
+ * @property {boolean} [tryIt.enabled] Whether to generate the separate dynamic playground page and CTA. Defaults to `true`.
  * @property {object} [navigation] Sidebar auto-population options.
  * @property {boolean} [navigation.enabled] When true, injects generated tag/operation links into the Starlight sidebar.
  * @property {string} [navigation.groupLabel] Label for the generated sidebar group. Defaults to "API Explorer".
@@ -98,6 +100,7 @@ function resolveOptions(options = {}) {
   const specPath = options.specPath ?? 'public/openapi.yaml';
   const specSource = resolveSpecSource(specPath);
   const endpointUI = normalizeEndpointUI(options.endpointUI);
+  const tryIt = normalizeTryItOptions(options.tryIt);
 
   const resolved = {
     specPath,
@@ -120,6 +123,7 @@ function resolveOptions(options = {}) {
     },
     endpointUI,
     navigation,
+    tryIt,
   };
 
   if (specSource.type === 'file') {
@@ -155,7 +159,14 @@ function createIntegration(resolvedOptions) {
   const writeSpecModule = async (spec) => {
     if (!specModulePath || !codegenDirPath) return;
 
-    const { manifest, chunks, operationChunkLookup } = createRuntimeSpecArtifacts(spec);
+    const {
+      manifest,
+      tagsWithDigests,
+      allOperationDigests,
+      allSchemaDigests,
+      chunks,
+      operationChunkLookup,
+    } = createRuntimeSpecArtifacts(spec);
 
     const specDir = path.dirname(specModulePath);
     const chunksDir = path.join(specDir, 'chunks');
@@ -183,8 +194,21 @@ function createIntegration(resolvedOptions) {
     });
     await Promise.all(chunkFileWrites);
 
+    const writeJson = async (filename, data) => {
+      const filePath = path.join(specDir, filename);
+      const payload = JSON.stringify(data ?? []);
+      await fs.writeFile(filePath, payload, 'utf8');
+    };
+
+    await Promise.all([
+      writeJson('tags.json', tagsWithDigests),
+      writeJson('operations-index.json', allOperationDigests),
+      writeJson('schemas.json', allSchemaDigests),
+    ]);
+
+    const manifestSource = JSON.stringify(manifest).replace(/</g, '\\u003C');
     const moduleSource = [
-      `const manifest = ${JSON.stringify(manifest)};`,
+      `const manifest = ${manifestSource};`,
       `const chunkLoaders = {`,
       chunkLoaderEntries.length ? chunkLoaderEntries.map((entry) => `  ${entry},`).join('\n') : '',
       `};`,
@@ -193,6 +217,12 @@ function createIntegration(resolvedOptions) {
       `const chunkIdToTag = ${JSON.stringify(chunkIdToTag)};`,
       `const chunkCache = new Map();`,
       `const chunkPromises = new Map();`,
+      `let tagsCache = null;`,
+      `let tagsPromise = null;`,
+      `let operationIndexCache = null;`,
+      `let operationIndexPromise = null;`,
+      `let schemasCache = null;`,
+      `let schemasPromise = null;`,
       `async function loadChunk(chunkId) {`,
       `  if (!chunkId) return null;`,
       `  if (chunkCache.has(chunkId)) return chunkCache.get(chunkId);`,
@@ -207,6 +237,34 @@ function createIntegration(resolvedOptions) {
       `  chunkCache.set(chunkId, resolved);`,
       `  chunkPromises.delete(chunkId);`,
       `  return resolved;`,
+      `}`,
+      `async function loadJsonModule(path) {`,
+      `  const mod = await import(path);`,
+      `  return mod && typeof mod === 'object' && 'default' in mod ? mod.default : mod;`,
+      `}`,
+      `export async function loadTags() {`,
+      `  if (tagsCache) return tagsCache;`,
+      `  if (!tagsPromise) {`,
+      `    tagsPromise = loadJsonModule('./tags.json');`,
+      `  }`,
+      `  tagsCache = await tagsPromise;`,
+      `  return tagsCache;`,
+      `}`,
+      `export async function loadOperationIndex() {`,
+      `  if (operationIndexCache) return operationIndexCache;`,
+      `  if (!operationIndexPromise) {`,
+      `    operationIndexPromise = loadJsonModule('./operations-index.json');`,
+      `  }`,
+      `  operationIndexCache = await operationIndexPromise;`,
+      `  return operationIndexCache;`,
+      `}`,
+      `export async function loadSchemas() {`,
+      `  if (schemasCache) return schemasCache;`,
+      `  if (!schemasPromise) {`,
+      `    schemasPromise = loadJsonModule('./schemas.json');`,
+      `  }`,
+      `  schemasCache = await schemasPromise;`,
+      `  return schemasCache;`,
       `}`,
       `export async function loadTagOperations(tagSlug) {`,
       `  const chunkIds = tagChunkMap[tagSlug];`,
@@ -260,6 +318,10 @@ function createIntegration(resolvedOptions) {
   const writeConfigModule = async () => {
     if (!configModulePath) return;
     const safeProxyTable = JSON.stringify(devProxyTable).replace(/</g, '\\u003C');
+    const safeTryIt = JSON.stringify(resolvedOptions.tryIt ?? { enabled: true }).replace(
+      /</g,
+      '\\u003C'
+    );
     const moduleSource = `export const baseSlug = ${JSON.stringify(
       resolvedOptions.baseSlug
     )};\nexport const outputDir = ${JSON.stringify(
@@ -268,7 +330,7 @@ function createIntegration(resolvedOptions) {
       resolvedOptions.endpointUI
     )};\nexport const resolvedEndpointUI = ${JSON.stringify(
       resolvedEndpointUI
-    )};\nexport const devProxyTable = ${safeProxyTable};\nexport default { baseSlug, outputDir, endpointUI, resolvedEndpointUI, devProxyTable };\n`;
+    )};\nexport const devProxyTable = ${safeProxyTable};\nexport const tryIt = ${safeTryIt};\nexport default { baseSlug, outputDir, endpointUI, resolvedEndpointUI, devProxyTable, tryIt };\n`;
     await fs.writeFile(configModulePath, moduleSource, 'utf8');
   };
 
@@ -295,6 +357,7 @@ function createIntegration(resolvedOptions) {
         logger,
         outputDir: resolvedOptions.generatedDocsDir,
         baseSlug: resolvedOptions.baseSlug,
+        tryItEnabled: resolvedOptions.tryIt.enabled !== false,
       });
       await generateSchemaIndexPage(normalizedSpec, {
         logger,
@@ -493,6 +556,21 @@ function normalizeNavigationOptions(rawOptions, baseSlug) {
   }
 
   return result;
+}
+
+function normalizeTryItOptions(rawValue) {
+  if (rawValue === false) {
+    return { enabled: false };
+  }
+  if (rawValue === true || rawValue === undefined || rawValue === null) {
+    return { enabled: true };
+  }
+  if (isPlainObject(rawValue)) {
+    return {
+      enabled: rawValue.enabled !== false,
+    };
+  }
+  return { enabled: true };
 }
 
 function normalizeNavigationItem(rawItem, defaults) {
@@ -996,21 +1074,19 @@ function createRuntimeSpecArtifacts(spec) {
         servers: [],
         stats: { operations: 0, tags: 0, deprecatedOperations: 0, untaggedOperations: 0 },
         document: {},
-        components: {},
-        tags: [],
-        operations: [],
-        schemas: [],
       },
+      tagsWithDigests: [],
+      allOperationDigests: [],
+      allSchemaDigests: [],
       chunks: [],
-      tagChunkMap: {},
       operationChunkLookup: {},
     };
   }
 
-  const tags = [];
+  const tagsWithDigests = [];
   const chunks = [];
   const operationChunkLookup = {};
-  const manifestOperations = [];
+  const allOperationDigests = [];
   const seenOperationSlugs = new Set();
   const trimmedSchemas = [];
 
@@ -1026,9 +1102,17 @@ function createRuntimeSpecArtifacts(spec) {
       const digest = createOperationDigest(operation);
       if (digest) {
         digestOperations.push(digest);
+        const indexEntry = {
+          ...digest,
+          tagSlug: tag.slug,
+          tagName:
+            (tag.metadata && typeof tag.metadata.displayName === 'string'
+              ? tag.metadata.displayName
+              : tag.name) || tag.slug,
+        };
+        allOperationDigests.push(indexEntry);
         if (!seenOperationSlugs.has(digest.slug)) {
           seenOperationSlugs.add(digest.slug);
-          manifestOperations.push(digest);
         }
       }
       const stripped = stripOperationForChunk(operation);
@@ -1049,26 +1133,25 @@ function createRuntimeSpecArtifacts(spec) {
       operations: digestOperations,
     });
 
-    if (chunkCandidates.length > 0) {
-      for (let start = 0; start < chunkCandidates.length; start += OPERATIONS_PER_CHUNK) {
-        const slice = chunkCandidates.slice(start, start + OPERATIONS_PER_CHUNK);
-        const chunkIndex = Math.floor(start / OPERATIONS_PER_CHUNK);
-        const chunkId = createChunkId(tag.slug, chunkIndex);
-        const fileName = buildChunkFileName(chunkId);
-        const operationsMap = {};
-        slice.forEach((entry) => {
-          operationsMap[entry.slug] = entry;
-          if (!operationChunkLookup[entry.slug]) {
-            operationChunkLookup[entry.slug] = chunkId;
-          }
-        });
-        chunks.push({
-          id: chunkId,
-          tagSlug: tag.slug,
-          fileName,
-          operations: operationsMap,
-        });
-      }
+    for (let start = 0; start < chunkCandidates.length; start += OPERATIONS_PER_CHUNK) {
+      const slice = chunkCandidates.slice(start, start + OPERATIONS_PER_CHUNK);
+      if (!slice.length) continue;
+      const chunkIndex = Math.floor(start / OPERATIONS_PER_CHUNK);
+      const chunkId = createChunkId(tag.slug, chunkIndex);
+      const fileName = buildChunkFileName(chunkId);
+      const operationsMap = {};
+      slice.forEach((entry) => {
+        operationsMap[entry.slug] = entry;
+        if (!operationChunkLookup[entry.slug]) {
+          operationChunkLookup[entry.slug] = chunkId;
+        }
+      });
+      chunks.push({
+        id: chunkId,
+        tagSlug: tag.slug,
+        fileName,
+        operations: operationsMap,
+      });
     }
   });
 
@@ -1079,6 +1162,7 @@ function createRuntimeSpecArtifacts(spec) {
         name: entry.name,
         slug: entry.slug,
         description: entry.description,
+        schema: entry.schema,
         extensions: entry.extensions,
       });
     });
@@ -1089,13 +1173,13 @@ function createRuntimeSpecArtifacts(spec) {
     servers: Array.isArray(spec.servers) ? spec.servers : [],
     stats: isPlainObject(spec.stats) ? spec.stats : {},
     document: buildRuntimeDocument(spec.document),
-    tags,
-    operations: manifestOperations,
-    schemas: trimmedSchemas,
   };
 
   return {
     manifest,
+    tagsWithDigests,
+    allOperationDigests,
+    allSchemaDigests: trimmedSchemas,
     chunks,
     operationChunkLookup,
   };

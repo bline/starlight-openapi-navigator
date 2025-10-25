@@ -3,6 +3,7 @@ import '../runtime/theme.css';
 import { Icon } from '@astrojs/starlight/components';
 import AnchorHeading from '@astrojs/starlight/components/AnchorHeading.astro';
 
+import { renderMarkdownLinks } from '../runtime/text.js';
 import SchemaPicker from './OpenApiSchemaPicker.astro';
 import SchemaNode from './OpenApiSchemaNode.astro';
 
@@ -16,6 +17,7 @@ const {
 const schemaName = schemaData?.name || currentSlug || 'Schema';
 const schemaSlug = schemaData?.slug || currentSlug || 'schema';
 const schemaDescription = schemaData?.description || '';
+const schemaDescriptionHtml = renderMarkdownLinks(schemaDescription);
 const normalizedSchema = schemaData?.schema && typeof schemaData.schema === 'object'
   ? schemaData.schema
   : null;
@@ -46,7 +48,7 @@ slugMap.set(schemaName, schemaSlug);
       {schemaName}
     </AnchorHeading>
 
-{schemaDescription && <p>{schemaDescription}</p>}
+{schemaDescriptionHtml && <p set:html={schemaDescriptionHtml}></p>}
 
 {normalizedSchema ? (
   <div class="schema-page__tree" data-schema-tree>
