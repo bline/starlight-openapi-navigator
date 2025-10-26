@@ -9,8 +9,13 @@ const AUTO_ROOT_STATE_ATTR = 'data-tryit-mounted';
 const DEFAULT_TRY_IT_ROOT_ID = 'tryit-root';
 const DEFAULT_TRY_IT_METHOD_ID = 'try-it';
 
-const schemaFormUtils = createSchemaFormUtils(spec);
-const { buildRequestBodyFormOptions, formatExampleValue } = schemaFormUtils;
+let schemaUtilsPromise = null;
+async function getSchemaFormUtils() {
+  if (!schemaUtilsPromise) {
+    schemaUtilsPromise = Promise.resolve(createSchemaFormUtils(spec));
+  }
+  return schemaUtilsPromise;
+}
 
 const proxyLookup = buildProxyLookup(
   Array.isArray(generatedConfig?.devProxyTable) ? generatedConfig.devProxyTable : []
@@ -37,11 +42,12 @@ export async function mountTryIt({ rootId, tagSlug, operationSlug, preferredTag 
       return;
     }
 
+    const schemaUtils = await getSchemaFormUtils();
     const context = {
       operation,
       servers: buildServerOptions(operation),
-      parameters: buildParameterGroups(operation),
-      bodyOptions: buildBodyOptions(operation),
+      parameters: buildParameterGroups(operation, schemaUtils),
+      bodyOptions: buildBodyOptions(operation, schemaUtils),
       securitySchemes: buildSecuritySchemes(operation),
     };
 
@@ -119,13 +125,13 @@ function buildServerOptions(operation) {
   }));
 }
 
-function buildParameterGroups(operation) {
+function buildParameterGroups(operation, schemaUtils) {
   const parameters = Array.isArray(operation?.parameters) ? operation.parameters : [];
   const enhanced = parameters
     .filter((param) => param && param.name && param.in)
     .map((param) => ({
       ...param,
-      exampleValue: formatExampleValue(getParameterExample(param)),
+      exampleValue: schemaUtils.formatExampleValue(getParameterExample(param)),
     }));
   return {
     path: enhanced.filter((param) => param.in === 'path'),
@@ -134,8 +140,8 @@ function buildParameterGroups(operation) {
   };
 }
 
-function buildBodyOptions(operation) {
-  const options = buildRequestBodyFormOptions(operation);
+function buildBodyOptions(operation, schemaUtils) {
+  const options = schemaUtils.buildRequestBodyFormOptions(operation);
   return options.map((option, index) => ({
     ...option,
     selected: index === 0,

@@ -1,9 +1,12 @@
 ---
-import spec from 'virtual:starlight-openapi-navigator/spec-data';
+import spec, {
+  loadTags,
+  loadSchemas,
+  clearTagsCache,
+} from 'virtual:starlight-openapi-navigator/spec-data';
 import generatedConfig from 'virtual:starlight-openapi-navigator/config';
 import '../runtime/theme.css';
 import { DEFAULT_BASE_SLUG } from '../runtime/config.js';
-import { buildOperationIndex } from '../runtime/operations.js';
 import { resolveEndpointUIMode } from '../runtime/endpoint-ui.js';
 import { stripHtml, renderMarkdownLinks } from '../runtime/text.js';
 import OpenApiEndpointSearch from './OpenApiEndpointSearch.astro';
@@ -39,6 +42,10 @@ const extractSecuritySchemes = (raw) => {
 const info = spec.info || {};
 const stats = spec.stats || { operations: 0, tags: 0, deprecatedOperations: 0 };
 const servers = Array.isArray(spec.servers) ? spec.servers : [];
+const [allTags, allSchemas] = await Promise.all([
+  loadTags().catch(() => []),
+  loadSchemas().catch(() => []),
+]);
 const securitySchemes = extractSecuritySchemes(spec.document?.components?.securitySchemes);
 const defaultSecurity = Array.isArray(spec.document?.security)
   ? spec.document.security.map((entry) => Object.keys(entry)[0]).filter(Boolean)
@@ -48,8 +55,8 @@ const configuredSlug = typeof generatedConfig?.baseSlug === 'string' && generate
   : DEFAULT_BASE_SLUG;
 const baseHref = `/${configuredSlug}`;
 const getTagDisplayName = (tag) => tag?.metadata?.displayName ?? tag.name;
-const tagGroups = Array.isArray(spec.tags)
-  ? spec.tags.map((tag) => ({
+const tagGroups = Array.isArray(allTags)
+  ? allTags.map((tag) => ({
       tag,
       operations: Array.isArray(tag.operations)
         ? tag.operations
@@ -71,10 +78,12 @@ const resolvedEndpointUI =
   typeof generatedConfig?.resolvedEndpointUI === 'string'
     ? generatedConfig.resolvedEndpointUI
     : resolveEndpointUIMode(configuredEndpointUI, stats.operations || 0);
-const operationsIndex = buildOperationIndex(spec, configuredSlug);
-const hasOperations = operationsIndex.length > 0;
+const hasOperations = (stats?.operations || 0) > 0;
 const showMenu = resolvedEndpointUI === 'menu' && tagGroups.some(({ operations }) => operations.length > 0);
 const showSearch = resolvedEndpointUI === 'search' && hasOperations;
+const hasSchemas = Array.isArray(allSchemas) && allSchemas.length > 0;
+
+clearTagsCache();
 ---
 
 <div class="api-overview sl-markdown-content">
@@ -184,14 +193,14 @@ const showSearch = resolvedEndpointUI === 'search' && hasOperations;
     <section>
       <h2 id="search">Search endpoints</h2>
       <OpenApiEndpointSearch
-        operations={operationsIndex}
         inputId="overview-endpoint-search"
         helperText="Start typing to filter endpoints by path, method, tag, or summary."
+        baseSlug={configuredSlug}
       />
     </section>
   )}
 
-  {Array.isArray(spec.schemas) && spec.schemas.length > 0 && (
+  {hasSchemas && (
     <section>
       <h2 id="schemas">Component schemas</h2>
       <p>
@@ -228,6 +237,7 @@ const showSearch = resolvedEndpointUI === 'search' && hasOperations;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  margin: 0;
 }
 
 .api-overview__stat-label {

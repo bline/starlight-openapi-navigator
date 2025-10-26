@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { loadAndNormalizeSpec } from './parser/index.js';
 import {
@@ -13,6 +13,78 @@ import {
   normalizeEndpointUI,
   resolveEndpointUIMode,
 } from './runtime/endpoint-ui.js';
+
+const PACKAGE_ROOT = fileURLToPath(new URL('.', import.meta.url));
+const PACKAGE_COMPONENTS_DIR = path.join(PACKAGE_ROOT, 'components');
+const PACKAGE_RUNTIME_DIR = path.join(PACKAGE_ROOT, 'runtime');
+
+function sanitizeInstanceId(value) {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return normalized || 'spec';
+}
+
+function normalizeIntegrationEntries(rawOptions) {
+  const entries = Array.isArray(rawOptions) ? rawOptions : [rawOptions ?? {}];
+  const seen = new Set();
+
+  return entries.map((options, index) => {
+    const candidate = (() => {
+      if (options && typeof options.instanceId === 'string' && options.instanceId.trim()) {
+        return options.instanceId;
+      }
+      if (options && typeof options.id === 'string' && options.id.trim()) {
+        return options.id;
+      }
+      if (options && typeof options.name === 'string' && options.name.trim()) {
+        return options.name;
+      }
+      if (entries.length === 1) return 'default';
+      return `spec-${index + 1}`;
+    })();
+
+    let instanceId = sanitizeInstanceId(candidate);
+    let suffix = 2;
+    while (!instanceId || seen.has(instanceId)) {
+      instanceId = sanitizeInstanceId(`${candidate}-${suffix}`);
+      suffix += 1;
+    }
+    seen.add(instanceId);
+
+    return {
+      options,
+      instanceId,
+    };
+  });
+}
+
+async function copyTemplateDir(srcDir, destDir, replacements = []) {
+  await fs.rm(destDir, { recursive: true, force: true });
+  await fs.mkdir(destDir, { recursive: true });
+  const entries = await fs.readdir(srcDir, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const srcPath = path.join(srcDir, entry.name);
+    const destPath = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      await copyTemplateDir(srcPath, destPath, replacements);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    let content = await fs.readFile(srcPath, 'utf8');
+    if (Array.isArray(replacements) && replacements.length) {
+      replacements.forEach(([searchValue, replaceValue]) => {
+        if (!searchValue) return;
+        content = content.split(searchValue).join(replaceValue);
+      });
+    }
+    await fs.writeFile(destPath, content, 'utf8');
+  }
+}
 
 /**
  * @typedef {object} StarlightOpenApiNavigatorOptions
@@ -42,49 +114,65 @@ import {
  * @returns {import('astro').AstroIntegration}
  */
 export function createOpenApiIntegration(options = {}) {
-  const resolvedOptions = resolveOptions(options);
+  const entries = normalizeIntegrationEntries(options);
+  if (entries.length !== 1) {
+    throw new Error('createOpenApiIntegration expects a single OpenAPI configuration.');
+  }
+  const entry = entries[0];
+  const resolvedOptions = resolveOptions(entry.options, {
+    instanceId: entry.instanceId,
+  });
   return createIntegration(resolvedOptions);
 }
 
-export function starlightOpenApiNavigator(options = {}) {
-  const resolvedOptions = resolveOptions(options);
-  const integration = createIntegration(resolvedOptions);
+export function starlightOpenApiNavigator(rawOptions = {}) {
+  const entries = normalizeIntegrationEntries(rawOptions);
+  const resolvedEntries = entries.map((entry) =>
+    resolveOptions(entry.options, {
+      instanceId: entry.instanceId,
+    })
+  );
+  const integrations = resolvedEntries.map((resolved) => createIntegration(resolved));
 
   return {
     name: 'starlight-openapi-navigator',
     hooks: {
       'config:setup': async ({ addIntegration, updateConfig, config, logger }) => {
-        addIntegration(integration);
+        integrations.forEach((integration) => addIntegration(integration));
 
-        if (!resolvedOptions.navigation.enabled) return;
+        let sidebar = cloneSidebar(config?.sidebar);
+        let sidebarChanged = false;
 
-        try {
-          const rawSpec = await loadAndNormalizeSpec(resolvedOptions.specSource);
-          const normalized = customizeSpec(rawSpec, resolvedOptions);
-          const resolvedEndpointUI = resolveEndpointUIMode(
-            resolvedOptions.endpointUI,
-            normalized?.stats?.operations ?? 0
-          );
-          const navigationGroup = buildNavigationGroup(
-            normalized,
-            resolvedOptions.navigation,
-            resolvedOptions.baseSlug,
-            resolvedEndpointUI
-          );
-          if (!navigationGroup) return;
+        for (const resolved of resolvedEntries) {
+          if (!resolved.navigation.enabled) continue;
 
-          const existingSidebar = cloneSidebar(config?.sidebar);
-          const nextSidebar = mergeSidebarWithGroup(
-            existingSidebar,
-            navigationGroup,
-            resolvedOptions.navigation
-          );
-          updateConfig({ sidebar: nextSidebar });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          logger?.warn?.(
-            `starlight-openapi-navigator: unable to generate sidebar navigation — ${message}`
-          );
+          try {
+            const rawSpec = await loadAndNormalizeSpec(resolved.specSource);
+            const normalized = customizeSpec(rawSpec, resolved);
+            const resolvedEndpointUI = resolveEndpointUIMode(
+              resolved.endpointUI,
+              normalized?.stats?.operations ?? 0
+            );
+            const navigationGroup = buildNavigationGroup(
+              normalized,
+              resolved.navigation,
+              resolved.baseSlug,
+              resolvedEndpointUI
+            );
+            if (!navigationGroup) continue;
+
+            sidebar = mergeSidebarWithGroup(sidebar, navigationGroup, resolved.navigation);
+            sidebarChanged = true;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger?.warn?.(
+              `starlight-openapi-navigator[${resolved.instanceId}]: unable to generate sidebar navigation for ${resolved.specLabel} — ${message}`
+            );
+          }
+        }
+
+        if (sidebarChanged) {
+          updateConfig({ sidebar });
         }
       },
     },
@@ -93,8 +181,35 @@ export function starlightOpenApiNavigator(options = {}) {
 
 export default starlightOpenApiNavigator;
 
-function resolveOptions(options = {}) {
-  const baseSlug = normalizeBaseSlug(options.baseSlug);
+async function runWithLimit(tasks, limit = 16) {
+  const queue = Array.isArray(tasks) ? tasks.filter(Boolean) : [];
+  const max = Math.max(1, Number(limit) || 1);
+  const running = new Set();
+  const results = [];
+
+  while (queue.length || running.size) {
+    while (queue.length && running.size < max) {
+      const task = queue.shift();
+      const promise = Promise.resolve()
+        .then(() => task())
+        .finally(() => running.delete(promise));
+      running.add(promise);
+      results.push(promise);
+    }
+    if (running.size) {
+      await Promise.race(running);
+    }
+  }
+
+  return Promise.all(results);
+}
+
+function resolveOptions(options = {}, extras = {}) {
+  const instanceId = sanitizeInstanceId(extras.instanceId ?? 'default');
+  const baseSlugInput = typeof options.baseSlug === 'string' && options.baseSlug.trim().length
+    ? options.baseSlug
+    : instanceId;
+  const baseSlug = normalizeBaseSlug(baseSlugInput);
   const defaultOutputDir = options.outputDir ?? path.join('src', 'pages', ...slugToSegments(baseSlug));
   const navigation = normalizeNavigationOptions(options.navigation, baseSlug);
   const specPath = options.specPath ?? 'public/openapi.yaml';
@@ -135,18 +250,24 @@ function resolveOptions(options = {}) {
     : path.join(process.cwd(), resolved.outputDir);
   resolved.legacyDocsDir = path.join(process.cwd(), 'src', 'content', 'docs', 'api-pages');
 
+  resolved.instanceId = instanceId;
+  resolved.specAlias = `virtual:starlight-openapi-navigator/spec-data/${instanceId}`;
+  resolved.configAlias = `virtual:starlight-openapi-navigator/config/${instanceId}`;
+
   return resolved;
 }
 
 function createIntegration(resolvedOptions) {
   /** @type {import('./parser/index.js').NormalizedOpenApiSpec | null} */
   let normalizedSpec = null;
+  let artifactsReady = false;
   let specModulePath = '';
   let codegenDirPath = '';
   let configModulePath = '';
   let regeneratePromise = null;
   let devProxyTable = [];
   let resolvedEndpointUI = resolveEndpointUIMode(resolvedOptions.endpointUI, 0);
+  let componentsDirPath = PACKAGE_COMPONENTS_DIR;
 
   const resetGeneratedDocsDir = async () => {
     if (resolvedOptions.legacyDocsDir !== resolvedOptions.generatedDocsDir) {
@@ -163,7 +284,9 @@ function createIntegration(resolvedOptions) {
       manifest,
       tagsWithDigests,
       allOperationDigests,
-      allSchemaDigests,
+      schemaList,
+      schemaSlugMap,
+      schemaDefinitions,
       chunks,
       operationChunkLookup,
     } = createRuntimeSpecArtifacts(spec);
@@ -173,65 +296,144 @@ function createIntegration(resolvedOptions) {
     await fs.rm(chunksDir, { recursive: true, force: true });
     await fs.mkdir(chunksDir, { recursive: true });
 
-    const chunkLoaderEntries = [];
+    const chunkSourceEntries = [];
+    const chunkFsSourceEntries = [];
     const chunkIdsByTag = {};
     const chunkIdToTag = {};
     const chunkFileWrites = chunks.map((chunk) => {
       const chunkFilePath = path.join(chunksDir, chunk.fileName);
       const chunkImportPath = `./chunks/${chunk.fileName}`;
-      chunkLoaderEntries.push(
-        `${JSON.stringify(chunk.id)}: () => import(${JSON.stringify(chunkImportPath)})`
-      );
+      chunkSourceEntries.push(`${JSON.stringify(chunk.id)}: ${JSON.stringify(chunkImportPath)}`);
+      chunkFsSourceEntries.push(`${JSON.stringify(chunk.id)}: ${JSON.stringify(chunkFilePath)}`);
       if (!chunkIdsByTag[chunk.tagSlug]) {
         chunkIdsByTag[chunk.tagSlug] = [];
       }
       chunkIdsByTag[chunk.tagSlug].push(chunk.id);
       chunkIdToTag[chunk.id] = chunk.tagSlug;
-      const chunkSource =
-        `export const operations = ${JSON.stringify(chunk.operations)};\n` +
-        `export default operations;\n`;
-      return fs.writeFile(chunkFilePath, chunkSource, 'utf8');
+      return () => {
+        const payload = JSON.stringify(chunk.operations);
+        return fs.writeFile(chunkFilePath, payload, 'utf8');
+      };
     });
-    await Promise.all(chunkFileWrites);
+    await runWithLimit(chunkFileWrites, 16);
 
-    const writeJson = async (filename, data) => {
+    const jsonFsSourceEntries = [];
+    const writeJson = async (filename, data, fallback) => {
       const filePath = path.join(specDir, filename);
-      const payload = JSON.stringify(data ?? []);
+      const payload = JSON.stringify(data ?? fallback);
+      jsonFsSourceEntries.push(`${JSON.stringify(`./${filename}`)}: ${JSON.stringify(filePath)}`);
       await fs.writeFile(filePath, payload, 'utf8');
     };
 
     await Promise.all([
-      writeJson('tags.json', tagsWithDigests),
-      writeJson('operations-index.json', allOperationDigests),
-      writeJson('schemas.json', allSchemaDigests),
+      writeJson('manifest.json', manifest, {}),
+      writeJson('tags.json', tagsWithDigests, []),
+      writeJson('operations-index.json', allOperationDigests, []),
+      writeJson('schemas-list.json', schemaList, []),
+      writeJson('schema-slug-map.json', schemaSlugMap, {}),
     ]);
 
-    const manifestSource = JSON.stringify(manifest).replace(/</g, '\\u003C');
-    const moduleSource = [
-      `const manifest = ${manifestSource};`,
-      `const chunkLoaders = {`,
-      chunkLoaderEntries.length ? chunkLoaderEntries.map((entry) => `  ${entry},`).join('\n') : '',
+    const schemaDefinitionsDir = path.join(specDir, 'schema-definitions');
+    await fs.rm(schemaDefinitionsDir, { recursive: true, force: true });
+    await fs.mkdir(schemaDefinitionsDir, { recursive: true });
+    const schemaDefinitionEntries = [];
+    const schemaDefinitionFsSourceEntries = [];
+    const schemaDefinitionWrites = schemaDefinitions
+      .map((entry) => {
+        if (!entry || typeof entry.slug !== 'string' || !entry.slug.length) return null;
+        const fileName = buildSchemaDefinitionFileName(entry.slug, entry.name);
+        const filePath = path.join(schemaDefinitionsDir, fileName);
+        const importPath = `./schema-definitions/${fileName}`;
+        schemaDefinitionEntries.push(`${JSON.stringify(entry.slug)}: ${JSON.stringify(importPath)}`);
+        schemaDefinitionFsSourceEntries.push(`${JSON.stringify(entry.slug)}: ${JSON.stringify(filePath)}`);
+        return () => fs.writeFile(filePath, JSON.stringify(entry.schema), 'utf8');
+      })
+      .filter(Boolean);
+    await runWithLimit(schemaDefinitionWrites, 8);
+
+    const modulePreludeParts = [
+      `const chunkSources = {`,
+      chunkSourceEntries.length ? chunkSourceEntries.map((entry) => `  ${entry},`).join('\n') : '',
       `};`,
-      `const tagChunkMap = ${JSON.stringify(chunkIdsByTag)};`,
-      `const operationChunkLookup = ${JSON.stringify(operationChunkLookup)};`,
-      `const chunkIdToTag = ${JSON.stringify(chunkIdToTag)};`,
+      `const chunkFsSources = {`,
+      chunkFsSourceEntries.length ? chunkFsSourceEntries.map((entry) => `  ${entry},`).join('\n') : '',
+      `};`,
+      `const schemaDefinitionSources = {`,
+      schemaDefinitionEntries.length
+        ? schemaDefinitionEntries.map((entry) => `  ${entry},`).join('\n')
+        : '',
+      `};`,
+      `const schemaDefinitionFsSources = {`,
+      schemaDefinitionFsSourceEntries.length
+        ? schemaDefinitionFsSourceEntries.map((entry) => `  ${entry},`).join('\n')
+        : '',
+      `};`,
+      `const jsonFsSources = {`,
+      jsonFsSourceEntries.length
+        ? jsonFsSourceEntries.map((entry) => `  ${entry},`).join('\n')
+        : '',
+      `};`,
+    ];
+    const modulePostludeParts = [
       `const chunkCache = new Map();`,
       `const chunkPromises = new Map();`,
+      `const isServerBuild = typeof window === 'undefined';`,
+      `function evictOperationFromChunk(chunkId, operationsMap, operationSlug) {`,
+      `  if (!isServerBuild || !operationsMap || !operationSlug) return;`,
+      `  if (operationsMap && Object.prototype.hasOwnProperty.call(operationsMap, operationSlug)) {`,
+      `    delete operationsMap[operationSlug];`,
+      `  }`,
+      `  if (operationsMap && Object.keys(operationsMap).length === 0) {`,
+      `    chunkCache.delete(chunkId);`,
+      `  }`,
+      `}`,
       `let tagsCache = null;`,
       `let tagsPromise = null;`,
       `let operationIndexCache = null;`,
       `let operationIndexPromise = null;`,
       `let schemasCache = null;`,
       `let schemasPromise = null;`,
+      `let schemaMapCache = null;`,
+      `let schemaMapPromise = null;`,
+      `let manifestCache = null;`,
+      `let manifestPromise = null;`,
+      `const schemaDefinitionCache = new Map();`,
+      `const schemaDefinitionPromises = new Map();`,
+      `let fsModule = null;`,
+      `async function ensureFsModule() {`,
+      `  if (!fsModule) {`,
+      `    fsModule = await import('node:fs/promises');`,
+      `  }`,
+      `  return fsModule;`,
+      `}`,
+      `async function loadJsonFromFs(fsPath, label) {`,
+      `  if (!fsPath) return null;`,
+      `  try {`,
+      `    const fs = await ensureFsModule();`,
+      `    const raw = await fs.readFile(fsPath, 'utf8');`,
+      `    return JSON.parse(raw);`,
+      `  } catch (error) {`,
+      `    console.error('starlight-openapi-navigator: failed to read json asset', label || fsPath, error);`,
+      `    return null;`,
+      `  }`,
+      `}`,
       `async function loadChunk(chunkId) {`,
       `  if (!chunkId) return null;`,
-      `  if (chunkCache.has(chunkId)) return chunkCache.get(chunkId);`,
-      `  if (chunkPromises.has(chunkId)) {`,
+      `  if (!isServerBuild && chunkCache.has(chunkId)) return chunkCache.get(chunkId);`,
+      `  if (!isServerBuild && chunkPromises.has(chunkId)) {`,
       `    return chunkPromises.get(chunkId);`,
       `  }`,
-      `  const loader = chunkLoaders[chunkId];`,
-      `  if (!loader) return null;`,
-      `  const promise = loader().then((mod) => mod.operations || mod.default || null);`,
+      `  const sourcePath = chunkSources[chunkId];`,
+      `  if (!sourcePath) return null;`,
+      `  const fsPath = chunkFsSources[chunkId];`,
+      `  if (isServerBuild) {`,
+      `    const data = await loadJsonFromFs(fsPath, sourcePath);`,
+      `    if (data !== null && data !== undefined) {`,
+      `      return data;`,
+      `    }`,
+      `    return loadJsonModule(sourcePath);`,
+      `  }`,
+      `  const promise = loadJsonModule(sourcePath);`,
       `  chunkPromises.set(chunkId, promise);`,
       `  const resolved = await promise;`,
       `  chunkCache.set(chunkId, resolved);`,
@@ -239,6 +441,27 @@ function createIntegration(resolvedOptions) {
       `  return resolved;`,
       `}`,
       `async function loadJsonModule(path) {`,
+      `  if (isServerBuild) {`,
+      `    const normalized = typeof path === 'string' && path.startsWith('./')`,
+      `      ? path`,
+      `      : typeof path === 'string' && path.length`,
+      `        ? './' + path`,
+      `        : './';`,
+      `    const fsPath = jsonFsSources[normalized] || jsonFsSources[path];`,
+      `    const fsResult = await loadJsonFromFs(fsPath, normalized);`,
+      `    if (fsResult !== null && fsResult !== undefined) {`,
+      `      return fsResult;`,
+      `    }`,
+      `    try {`,
+      `      const fileUrl = new URL(path, import.meta.url);`,
+      `      const fs = await ensureFsModule();`,
+      `      const raw = await fs.readFile(fileUrl, 'utf8');`,
+      `      return JSON.parse(raw);`,
+      `    } catch (error) {`,
+      `      console.error('starlight-openapi-navigator: failed to read json file', path, error);`,
+      `      return null;`,
+      `    }`,
+      `  }`,
       `  const mod = await import(path);`,
       `  return mod && typeof mod === 'object' && 'default' in mod ? mod.default : mod;`,
       `}`,
@@ -249,6 +472,10 @@ function createIntegration(resolvedOptions) {
       `  }`,
       `  tagsCache = await tagsPromise;`,
       `  return tagsCache;`,
+      `}`,
+      `export function clearTagsCache() {`,
+      `  tagsCache = null;`,
+      `  tagsPromise = null;`,
       `}`,
       `export async function loadOperationIndex() {`,
       `  if (operationIndexCache) return operationIndexCache;`,
@@ -261,10 +488,60 @@ function createIntegration(resolvedOptions) {
       `export async function loadSchemas() {`,
       `  if (schemasCache) return schemasCache;`,
       `  if (!schemasPromise) {`,
-      `    schemasPromise = loadJsonModule('./schemas.json');`,
+        `    schemasPromise = loadJsonModule('./schemas-list.json');`,
       `  }`,
-      `  schemasCache = await schemasPromise;`,
+      `  const resolved = await schemasPromise;`,
+      `  schemasCache = Array.isArray(resolved) ? resolved : [];`,
       `  return schemasCache;`,
+      `}`,
+      `export async function loadSchemaSlugMap() {`,
+      `  if (schemaMapCache) return schemaMapCache;`,
+      `  if (!schemaMapPromise) {`,
+        `    schemaMapPromise = (async () => {`,
+          `      const raw = await loadJsonModule('./schema-slug-map.json');`,
+          `      if (!raw || typeof raw !== 'object') return new Map();`,
+          `      return new Map(Object.entries(raw));`,
+        `    })();`,
+      `  }`,
+      `  schemaMapCache = await schemaMapPromise;`,
+      `  return schemaMapCache;`,
+      `}`,
+      `export async function loadManifest() {`,
+      `  if (manifestCache) return manifestCache;`,
+      `  if (!manifestPromise) {`,
+      `    manifestPromise = (async () => {`,
+      `      const data = await loadJsonModule('./manifest.json');`,
+      `      if (!data || typeof data !== 'object') return {};`,
+      `      return data;`,
+      `    })();`,
+      `  }`,
+      `  manifestCache = await manifestPromise;`,
+      `  return manifestCache;`,
+      `}`,
+      `export async function loadSchemaDefinition(schemaSlug) {`,
+      `  if (!schemaSlug) return null;`,
+      `  if (!isServerBuild && schemaDefinitionCache.has(schemaSlug)) {`,
+      `    return schemaDefinitionCache.get(schemaSlug);`,
+      `  }`,
+      `  if (!isServerBuild && schemaDefinitionPromises.has(schemaSlug)) {`,
+      `    return schemaDefinitionPromises.get(schemaSlug);`,
+      `  }`,
+      `  const sourcePath = schemaDefinitionSources[schemaSlug];`,
+      `  if (!sourcePath) return null;`,
+      `  if (isServerBuild) {`,
+      `    const fsPath = schemaDefinitionFsSources[schemaSlug];`,
+      `    const data = await loadJsonFromFs(fsPath, sourcePath);`,
+      `    if (data !== null && data !== undefined) {`,
+      `      return data;`,
+      `    }`,
+      `    return loadJsonModule(sourcePath);`,
+      `  }`,
+      `  const promise = loadJsonModule(sourcePath);`,
+      `  schemaDefinitionPromises.set(schemaSlug, promise);`,
+      `  const resolved = await promise;`,
+      `  schemaDefinitionCache.set(schemaSlug, resolved);`,
+      `  schemaDefinitionPromises.delete(schemaSlug);`,
+      `  return resolved;`,
       `}`,
       `export async function loadTagOperations(tagSlug) {`,
       `  const chunkIds = tagChunkMap[tagSlug];`,
@@ -291,7 +568,9 @@ function createIntegration(resolvedOptions) {
       `      for (const id of ids) {`,
       `        const tagOperations = await loadChunk(id);`,
       `        if (tagOperations && tagOperations[operationSlug]) {`,
-      `          return tagOperations[operationSlug];`,
+      `          const operation = tagOperations[operationSlug];`,
+      `          evictOperationFromChunk(id, tagOperations, operationSlug);`,
+      `          return operation;`,
       `        }`,
       `      }`,
       `    }`,
@@ -299,20 +578,45 @@ function createIntegration(resolvedOptions) {
       `  const chunkId = operationChunkLookup[operationSlug];`,
       `  if (!chunkId) return null;`,
       `  const operations = await loadChunk(chunkId);`,
-      `  return operations ? operations[operationSlug] ?? null : null;`,
+      `  if (!operations) return null;`,
+      `  const operation = operations[operationSlug] ?? null;`,
+      `  if (operation) {`,
+      `    evictOperationFromChunk(chunkId, operations, operationSlug);`,
+      `  }`,
+      `  return operation;`,
       `}`,
       `export function getOperationPreferredTag(operationSlug) {`,
       `  const chunkId = operationChunkLookup[operationSlug];`,
       `  if (!chunkId) return null;`,
       `  return chunkIdToTag[chunkId] ?? null;`,
       `}`,
+      `const manifest = await loadManifest();`,
       `export const spec = manifest;`,
       `export const manifestData = manifest;`,
       `export default manifest;`,
       '',
-    ].join('\n');
+    ];
 
-    await fs.writeFile(specModulePath, moduleSource, 'utf8');
+    const modulePrelude = `${modulePreludeParts.join('\n')}\n`;
+    const modulePostlude = `${modulePostludeParts.join('\n')}\n`;
+
+    await fs.writeFile(specModulePath, modulePrelude, 'utf8');
+    await fs.appendFile(
+      specModulePath,
+      `const tagChunkMap = ${JSON.stringify(chunkIdsByTag)};\n`,
+      'utf8'
+    );
+    await fs.appendFile(
+      specModulePath,
+      `const operationChunkLookup = ${JSON.stringify(operationChunkLookup)};\n`,
+      'utf8'
+    );
+    await fs.appendFile(
+      specModulePath,
+      `const chunkIdToTag = ${JSON.stringify(chunkIdToTag)};\n`,
+      'utf8'
+    );
+    await fs.appendFile(specModulePath, modulePostlude, 'utf8');
   };
 
   const writeConfigModule = async () => {
@@ -336,6 +640,7 @@ function createIntegration(resolvedOptions) {
 
   const regenerateArtifacts = async (logger) => {
     if (regeneratePromise) return regeneratePromise;
+    artifactsReady = false;
     regeneratePromise = (async () => {
       await resetGeneratedDocsDir();
       const rawSpec = await loadAndNormalizeSpec(resolvedOptions.specSource);
@@ -352,30 +657,37 @@ function createIntegration(resolvedOptions) {
         outputDir: resolvedOptions.generatedDocsDir,
         baseSlug: resolvedOptions.baseSlug,
         endpointUI: resolvedEndpointUI,
+        componentsDir: componentsDirPath,
       });
       await generateOperationPages(normalizedSpec, {
         logger,
         outputDir: resolvedOptions.generatedDocsDir,
         baseSlug: resolvedOptions.baseSlug,
         tryItEnabled: resolvedOptions.tryIt.enabled !== false,
+        componentsDir: componentsDirPath,
       });
       await generateSchemaIndexPage(normalizedSpec, {
         logger,
         outputDir: resolvedOptions.generatedDocsDir,
         baseSlug: resolvedOptions.baseSlug,
+        componentsDir: componentsDirPath,
       });
       await generateSchemaDetailPages(normalizedSpec, {
         logger,
         outputDir: resolvedOptions.generatedDocsDir,
         baseSlug: resolvedOptions.baseSlug,
+        componentsDir: componentsDirPath,
       });
+      const operationCount = normalizedSpec?.stats?.operations ?? 0;
       logger.info(
-        `starlight-openapi-navigator: generated ${normalizedSpec.stats.operations} operation page(s) from ${resolvedOptions.specLabel}.`
+        `starlight-openapi-navigator[${resolvedOptions.instanceId}]: generated ${operationCount} operation page(s) from ${resolvedOptions.specLabel}.`
       );
+      normalizedSpec = null;
+      artifactsReady = true;
     })()
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
-        logger.error(`starlight-openapi-navigator: failed regeneration — ${message}`);
+        logger.error(`starlight-openapi-navigator[${resolvedOptions.instanceId}]: failed regeneration — ${message}`);
         throw error;
       })
       .finally(() => {
@@ -396,7 +708,7 @@ function createIntegration(resolvedOptions) {
         command,
       }) => {
         logger.debug(
-          `starlight-openapi-navigator: using spec at ${resolvedOptions.specLabel}`
+          `starlight-openapi-navigator[${resolvedOptions.instanceId}]: using spec at ${resolvedOptions.specLabel}`
         );
 
         if (resolvedOptions.specSource.type === 'file' && resolvedOptions.specFilePath) {
@@ -404,7 +716,12 @@ function createIntegration(resolvedOptions) {
         }
 
         const codegenDirUrl = createCodegenDir();
-        codegenDirPath = fileURLToPath(codegenDirUrl);
+        const baseCodegenDirPath = fileURLToPath(codegenDirUrl);
+        const instanceDirPath = path.join(baseCodegenDirPath, resolvedOptions.instanceId);
+        await fs.rm(instanceDirPath, { recursive: true, force: true });
+        await fs.mkdir(instanceDirPath, { recursive: true });
+
+        codegenDirPath = instanceDirPath;
         specModulePath = path.join(
           codegenDirPath,
           'starlight-openapi-navigator-spec.mjs'
@@ -414,15 +731,27 @@ function createIntegration(resolvedOptions) {
           'starlight-openapi-navigator-config.mjs'
         );
 
+        const instanceComponentsDir = path.join(codegenDirPath, 'components');
+        const instanceRuntimeDir = path.join(codegenDirPath, 'runtime');
+        const replacements = [
+          ['virtual:starlight-openapi-navigator/spec-data', resolvedOptions.specAlias],
+          ['virtual:starlight-openapi-navigator/config', resolvedOptions.configAlias],
+        ];
+        await copyTemplateDir(PACKAGE_COMPONENTS_DIR, instanceComponentsDir, replacements);
+        await copyTemplateDir(PACKAGE_RUNTIME_DIR, instanceRuntimeDir, replacements);
+        componentsDirPath = instanceComponentsDir;
+
         await regenerateArtifacts(logger);
+
+        const aliasEntries = {
+          [resolvedOptions.specAlias]: pathToFileURL(specModulePath).href,
+          [resolvedOptions.configAlias]: pathToFileURL(configModulePath).href,
+        };
 
         updateConfig({
           vite: {
             resolve: {
-              alias: {
-                'virtual:starlight-openapi-navigator/spec-data': specModulePath,
-                'virtual:starlight-openapi-navigator/config': configModulePath,
-              },
+              alias: aliasEntries,
             },
           },
         });
@@ -451,7 +780,7 @@ function createIntegration(resolvedOptions) {
         const watcherHandler = (changedPath) => {
           if (path.resolve(changedPath) === resolvedOptions.specFilePath) {
             logger.debug(
-              `starlight-openapi-navigator: detected change in ${resolvedOptions.specFilePath}, regenerating…`
+              `starlight-openapi-navigator[${resolvedOptions.instanceId}]: detected change in ${resolvedOptions.specFilePath}, regenerating…`
             );
             regenerateArtifacts(logger);
           }
@@ -461,7 +790,7 @@ function createIntegration(resolvedOptions) {
         server.watcher.on('add', watcherHandler);
       },
       'astro:server:start': async ({ logger }) => {
-        if (!normalizedSpec) {
+        if (!artifactsReady) {
           await regenerateArtifacts(logger);
         }
       },
@@ -605,7 +934,14 @@ function normalizeNavigationItem(rawItem, defaults) {
 }
 
 function customizeSpec(spec, options) {
-  const cloned = cloneSpec(spec);
+  /** @type {any} */
+  const cloned = {
+    info: spec?.info ?? {},
+    servers: Array.isArray(spec?.servers) ? spec.servers : [],
+    tags: Array.isArray(spec?.tags) ? spec.tags : [],
+    operations: Array.isArray(spec?.operations) ? spec.operations : [],
+    document: spec?.document ?? {},
+  };
 
   const includeSet = createNormalizedSet(options.tags?.include);
   const excludeSet = createNormalizedSet(options.tags?.exclude);
@@ -886,13 +1222,6 @@ function cloneSidebar(sidebar) {
   return JSON.parse(JSON.stringify(sidebar));
 }
 
-function cloneSpec(spec) {
-  if (typeof globalThis.structuredClone === 'function') {
-    return globalThis.structuredClone(spec);
-  }
-  return JSON.parse(JSON.stringify(spec));
-}
-
 function createNormalizedSet(values) {
   if (!Array.isArray(values) || values.length === 0) return null;
   const set = new Set();
@@ -1077,7 +1406,9 @@ function createRuntimeSpecArtifacts(spec) {
       },
       tagsWithDigests: [],
       allOperationDigests: [],
-      allSchemaDigests: [],
+      schemaList: [],
+      schemaSlugMap: {},
+      schemaDefinitions: [],
       chunks: [],
       operationChunkLookup: {},
     };
@@ -1087,8 +1418,9 @@ function createRuntimeSpecArtifacts(spec) {
   const chunks = [];
   const operationChunkLookup = {};
   const allOperationDigests = [];
-  const seenOperationSlugs = new Set();
-  const trimmedSchemas = [];
+  const schemaList = [];
+  const schemaDefinitions = [];
+  const schemaSlugMap = {};
 
   const sourceTags = Array.isArray(spec.tags) ? spec.tags : [];
   sourceTags.forEach((tag) => {
@@ -1111,9 +1443,6 @@ function createRuntimeSpecArtifacts(spec) {
               : tag.name) || tag.slug,
         };
         allOperationDigests.push(indexEntry);
-        if (!seenOperationSlugs.has(digest.slug)) {
-          seenOperationSlugs.add(digest.slug);
-        }
       }
       const stripped = stripOperationForChunk(operation);
       if (stripped && stripped.slug) {
@@ -1121,7 +1450,7 @@ function createRuntimeSpecArtifacts(spec) {
       }
     });
 
-    tags.push({
+    tagsWithDigests.push({
       name: tag.name,
       slug: tag.slug,
       description: tag.description,
@@ -1158,13 +1487,34 @@ function createRuntimeSpecArtifacts(spec) {
   if (Array.isArray(spec.schemas)) {
     spec.schemas.forEach((entry) => {
       if (!entry || typeof entry.name !== 'string') return;
-      trimmedSchemas.push({
+      const slug = typeof entry.slug === 'string' ? entry.slug : undefined;
+      if (slug) {
+        schemaSlugMap[entry.name] = slug;
+      }
+      schemaList.push({
         name: entry.name,
-        slug: entry.slug,
+        slug: slug,
         description: entry.description,
-        schema: entry.schema,
-        extensions: entry.extensions,
       });
+      if (entry.schema && typeof entry.schema === 'object') {
+        const rawSlug =
+          typeof slug === 'string' && slug.length
+            ? slug
+            : typeof entry.name === 'string' && entry.name.length
+              ? entry.name.toLowerCase()
+              : '';
+        const safeSlug = rawSlug
+          .replace(/[^a-zA-Z0-9._-]/g, '-')
+          .replace(/-+/g, '-')
+          .replace(/^-|-$/g, '');
+        if (safeSlug) {
+          schemaDefinitions.push({
+            slug: safeSlug,
+            name: entry.name,
+            schema: entry.schema,
+          });
+        }
+      }
     });
   }
 
@@ -1179,7 +1529,9 @@ function createRuntimeSpecArtifacts(spec) {
     manifest,
     tagsWithDigests,
     allOperationDigests,
-    allSchemaDigests: trimmedSchemas,
+    schemaList,
+    schemaSlugMap,
+    schemaDefinitions,
     chunks,
     operationChunkLookup,
   };
@@ -1269,7 +1621,18 @@ function createChunkId(tagSlug, chunkIndex = 0) {
 function buildChunkFileName(chunkId) {
   const safe = chunkId.replace(/[^a-zA-Z0-9:_-]/g, '-').replace(/:+/g, '-');
   const collapsed = safe.replace(/-+/g, '-').replace(/^-|-$/g, '');
-  return `operations-${collapsed || 'chunk'}.mjs`;
+  return `operations-${collapsed || 'chunk'}.json`;
+}
+
+function buildSchemaDefinitionFileName(slug, name) {
+  const base =
+    (typeof slug === 'string' && slug.length
+      ? slug
+      : typeof name === 'string' && name.length
+        ? name
+        : 'schema-definition');
+  const safe = base.replace(/[^a-zA-Z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  return `schema-${safe || 'definition'}.json`;
 }
 
 function buildRuntimeDocument(document) {

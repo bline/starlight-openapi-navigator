@@ -1,40 +1,19 @@
 ---
-import { stripHtml } from '../runtime/text.js';
+import { DEFAULT_BASE_SLUG } from '../runtime/config.js';
 
 const {
-  operations = [],
   inputId = 'endpoint-search',
   label = 'Find an endpoint',
   placeholder = 'Search by path, summary, or tag',
   helperText = '',
   maxResults = 12,
+  baseSlug = DEFAULT_BASE_SLUG,
 } = Astro.props;
 
-const sanitizedOperations = Array.isArray(operations)
-  ? operations
-      .filter((operation) => operation && typeof operation.href === 'string')
-      .map((operation) => ({
-        id: operation.id,
-        href: operation.href,
-        method: typeof operation.method === 'string' ? operation.method : '',
-        path: typeof operation.path === 'string' ? operation.path : '',
-        summary: stripHtml(operation.summary),
-        tagName: stripHtml(operation.tagName),
-        deprecated: Boolean(operation.deprecated),
-      }))
-  : [];
-
-const datasetId = `${inputId}-dataset`;
 const resultsId = `${inputId}-results`;
 const maxResultsNumber = Number.isFinite(Number(maxResults)) ? Number(maxResults) : 12;
-
-const serializeForScript = (value) => {
-  try {
-    return JSON.stringify(value).replace(/</g, '\\u003C');
-  } catch {
-    return '[]';
-  }
-};
+const resolvedBaseSlug =
+  typeof baseSlug === 'string' && baseSlug.length ? baseSlug : DEFAULT_BASE_SLUG;
 ---
 
 <div
@@ -42,8 +21,8 @@ const serializeForScript = (value) => {
   data-endpoint-search-root
   data-endpoint-search-input-id={inputId}
   data-endpoint-search-results-id={resultsId}
-  data-endpoint-search-dataset-id={datasetId}
   data-endpoint-search-max-results={maxResultsNumber}
+  data-endpoint-search-base-slug={resolvedBaseSlug}
 >
   <label class="endpoint-search__label" for={inputId}>{label}</label>
   <div class="endpoint-search__input">
@@ -60,13 +39,44 @@ const serializeForScript = (value) => {
     <ul id={resultsId} class="endpoint-search__results" role="listbox" hidden></ul>
   </div>
   {helperText && <p class="endpoint-search__hint">{helperText}</p>}
-  <script
-    type="application/json"
-    id={datasetId}
-    data-endpoint-search-dataset
-    set:html={serializeForScript(sanitizedOperations)}
-  ></script>
   <script type="module">
+    const operationsCache = new Map();
+
+    async function loadOperations(baseSlug) {
+      if (!baseSlug) baseSlug = 'api';
+      if (!operationsCache.has(baseSlug)) {
+        const promise = (async () => {
+          try {
+            const [textMod, operationsMod, specMod] = await Promise.all([
+              import('../runtime/text.js'),
+              import('../runtime/operations.js'),
+              import('virtual:starlight-openapi-navigator/spec-data'),
+            ]);
+            const rawIndex = await specMod.loadOperationIndex().catch(() => []);
+            const resolved = operationsMod.buildOperationIndex(rawIndex, baseSlug);
+            const sanitize = (value) => (typeof value === 'string' ? value : '');
+            const strip = textMod.stripHtml;
+            return Array.isArray(resolved)
+              ? resolved.map((operation) => ({
+                  id: operation.id,
+                  href: sanitize(operation.href),
+                  method: sanitize(operation.method),
+                  path: sanitize(operation.path),
+                  summary: strip(operation.summary),
+                  tagName: strip(operation.tagName),
+                  deprecated: Boolean(operation.deprecated),
+                }))
+              : [];
+          } catch (error) {
+            console.error('starlight-openapi-navigator: unable to load operation index', error);
+            return [];
+          }
+        })();
+        operationsCache.set(baseSlug, promise);
+      }
+      return operationsCache.get(baseSlug);
+    }
+
     const roots = document.querySelectorAll('[data-endpoint-search-root]');
     roots.forEach((root) => {
       if (root.dataset.endpointSearchInitialized === 'true') {
@@ -74,16 +84,15 @@ const serializeForScript = (value) => {
       }
       root.dataset.endpointSearchInitialized = 'true';
 
-      const datasetId = root.dataset.endpointSearchDatasetId;
       const inputId = root.dataset.endpointSearchInputId;
       const resultsId = root.dataset.endpointSearchResultsId;
-      const datasetEl = datasetId ? document.getElementById(datasetId) : null;
       const input = inputId ? document.getElementById(inputId) : null;
       const resultsList = resultsId ? document.getElementById(resultsId) : null;
       const parsedMax = Number(root.dataset.endpointSearchMaxResults);
       const MAX_RESULTS = Number.isFinite(parsedMax) ? parsedMax : 12;
+      const baseSlug = root.dataset.endpointSearchBaseSlug || 'api';
 
-      if (!datasetEl || !input || !resultsList) {
+      if (!input || !resultsList) {
         console.warn('starlight-openapi-navigator: endpoint search markup missing expected elements.');
         return;
       }
@@ -91,15 +100,8 @@ const serializeForScript = (value) => {
       let matches = [];
       let activeIndex = -1;
       let operations = [];
-
-      try {
-        const parsed = JSON.parse(datasetEl.textContent || '[]');
-        if (Array.isArray(parsed)) {
-          operations = parsed.filter((entry) => entry && typeof entry.href === 'string');
-        }
-      } catch (error) {
-        console.error('starlight-openapi-navigator: failed to parse endpoint dataset.', error);
-      }
+      let indexedOperations = [];
+      let isLoaded = false;
 
       const normalize = (value) => value.toLowerCase().replace(/\s+/g, ' ').trim();
       const buildHaystack = (operation) =>
@@ -108,11 +110,6 @@ const serializeForScript = (value) => {
             .filter(Boolean)
             .join(' ')
         );
-
-      const indexedOperations = operations.map((operation) => ({
-        ...operation,
-        haystack: buildHaystack(operation),
-      }));
 
       const renderMatches = () => {
         resultsList.innerHTML = '';
@@ -198,6 +195,9 @@ const serializeForScript = (value) => {
       };
 
       const applyQuery = () => {
+        if (!isLoaded) {
+          return;
+        }
         const value = normalize(input.value);
         if (!value) {
           clearResults();
@@ -271,6 +271,40 @@ const serializeForScript = (value) => {
       if (typeof window !== 'undefined') {
         window.addEventListener('pageshow', () => clearResults());
       }
+
+      const setLoadingState = (loading) => {
+        if (loading) {
+          input.setAttribute('aria-busy', 'true');
+          input.setAttribute('data-loading', 'true');
+          input.setAttribute('disabled', '');
+        } else {
+          input.removeAttribute('aria-busy');
+          input.removeAttribute('data-loading');
+          if (operations.length > 0) {
+            input.removeAttribute('disabled');
+          } else {
+            input.setAttribute('disabled', '');
+          }
+        }
+      };
+
+      const bootstrap = async () => {
+        setLoadingState(true);
+        operations = await loadOperations(baseSlug);
+        indexedOperations = Array.isArray(operations)
+          ? operations.map((operation) => ({
+              ...operation,
+              haystack: buildHaystack(operation),
+            }))
+          : [];
+        isLoaded = true;
+        setLoadingState(false);
+      };
+
+      bootstrap().catch((error) => {
+        console.error('starlight-openapi-navigator: failed to initialize endpoint search', error);
+        setLoadingState(false);
+      });
     });
   </script>
 </div>

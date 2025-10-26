@@ -18,6 +18,7 @@ import { DEFAULT_BASE_SLUG } from '../runtime/config.js';
  * @property {string} baseSlug
  * @property {'menu'|'search'} [endpointUI]
  * @property {boolean} [tryItEnabled]
+ * @property {string} [componentsDir]
  */
 
 const PACKAGE_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -40,7 +41,7 @@ const SCHEMAS_DIRNAME = 'schemas';
  * @param {PageGenerationContext} ctx
  */
 export async function generateOverviewPage(spec, ctx) {
-  const { outputDir, baseSlug, endpointUI } = ctx;
+  const { outputDir, baseSlug, endpointUI, componentsDir = COMPONENTS_DIR } = ctx;
   await fs.mkdir(outputDir, { recursive: true });
 
   const filePath = path.join(outputDir, OVERVIEW_FILENAME);
@@ -69,6 +70,7 @@ export async function generateOverviewPage(spec, ctx) {
     filePath,
     frontmatter,
     headings,
+    componentsDir,
   });
 
   await fs.writeFile(filePath, source, 'utf8');
@@ -81,13 +83,12 @@ export async function generateOverviewPage(spec, ctx) {
  * @param {PageGenerationContext} ctx
  */
 export async function generateOperationPages(spec, ctx) {
-  const { outputDir, baseSlug, logger, tryItEnabled = true } = ctx;
+  const { outputDir, baseSlug, logger, tryItEnabled = true, componentsDir = COMPONENTS_DIR } = ctx;
   const resolvedSlug = baseSlug || DEFAULT_BASE_SLUG;
   await fs.mkdir(outputDir, { recursive: true });
 
-  const writes = [];
-
-  spec.tags.forEach((tag, tagIndex) => {
+  const tags = Array.isArray(spec.tags) ? spec.tags : [];
+  for (const [tagIndex, tag] of tags.entries()) {
     if (tag.slug === 'index' || tag.slug === SCHEMAS_DIRNAME) {
       const message = `starlight-openapi-navigator: tag slug "${tag.slug}" collides with a generated route. Rename the tag or configure a different baseSlug.`;
       if (logger && typeof logger.error === 'function') {
@@ -97,7 +98,7 @@ export async function generateOperationPages(spec, ctx) {
     }
 
     const operations = Array.isArray(tag.operations) ? tag.operations : [];
-    operations.forEach((operation, operationIndex) => {
+    for (const [operationIndex, operation] of operations.entries()) {
       if (!operation?.slug) return;
       if (operation.slug === 'index' || operation.slug === SCHEMAS_DIRNAME) {
         const message = `starlight-openapi-navigator: operation slug "${operation.slug}" under tag "${tag.slug}" collides with a generated route. Provide a custom operationId or adjust the baseSlug.`;
@@ -130,30 +131,32 @@ export async function generateOperationPages(spec, ctx) {
       const headings = buildOperationHeadings(operation);
       const tagSlugLiteral = JSON.stringify(tag.slug);
       const operationSlugLiteral = JSON.stringify(operation.slug);
-      writes.push(
-        fs
-          .mkdir(operationDir, { recursive: true })
-          .then(() => {
-            const source = buildStarlightPageSource({
-              componentName: 'OpenApiOperationPage',
-              componentFilename: OPERATION_COMPONENT,
-              filePath,
-              frontmatter,
-              headings,
-              componentProps: [
-                `tagSlug={${tagSlugLiteral}}`,
-                `operationSlug={${operationSlugLiteral}}`,
-              ],
-            });
+      const source = buildStarlightPageSource({
+        componentName: 'OpenApiOperationPage',
+        componentFilename: OPERATION_COMPONENT,
+        filePath,
+        frontmatter,
+        headings,
+        componentProps: [
+          `tagSlug={${tagSlugLiteral}}`,
+          `operationSlug={${operationSlugLiteral}}`,
+        ],
+        componentsDir,
+      });
 
-            return fs.writeFile(filePath, source, 'utf8');
-          })
-      );
-
-    });
-  });
-
-  await Promise.all(writes);
+      try {
+        await fs.mkdir(operationDir, { recursive: true });
+        await fs.writeFile(filePath, source, 'utf8');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (logger && typeof logger.error === 'function') {
+          logger.error(
+            `starlight-openapi-navigator: failed to write operation page at ${filePath} — ${message}`
+          );
+        }
+      }
+    }
+  }
 
   if (tryItEnabled) {
     const tryDir = path.join(outputDir, 'try');
@@ -172,6 +175,7 @@ export async function generateOperationPages(spec, ctx) {
       filePath: tryPagePath,
       frontmatter: tryFrontmatter,
       headings: tryHeadings,
+      componentsDir,
     });
     await fs.writeFile(tryPagePath, trySource, 'utf8');
   }
@@ -179,7 +183,7 @@ export async function generateOperationPages(spec, ctx) {
 
 export async function generateSchemaIndexPage(spec, ctx) {
   if (!Array.isArray(spec.schemas) || spec.schemas.length === 0) return;
-  const { outputDir, baseSlug } = ctx;
+  const { outputDir, baseSlug, componentsDir = COMPONENTS_DIR } = ctx;
   const resolvedSlug = baseSlug || DEFAULT_BASE_SLUG;
 
   const schemaDir = path.join(outputDir, SCHEMAS_DIRNAME);
@@ -215,6 +219,7 @@ export async function generateSchemaIndexPage(spec, ctx) {
       `schemas={${serialize(schemaList)}}`,
       `baseSlug=${JSON.stringify(resolvedSlug)}`,
     ],
+    componentsDir,
   });
 
   await fs.writeFile(filePath, source, 'utf8');
@@ -222,19 +227,19 @@ export async function generateSchemaIndexPage(spec, ctx) {
 
 export async function generateSchemaDetailPages(spec, ctx) {
   if (!Array.isArray(spec.schemas) || spec.schemas.length === 0) return;
-  const { outputDir, baseSlug, logger } = ctx;
+  const { outputDir, baseSlug, logger, componentsDir = COMPONENTS_DIR } = ctx;
   const resolvedSlug = baseSlug || DEFAULT_BASE_SLUG;
   const schemaDir = path.join(outputDir, SCHEMAS_DIRNAME);
   await fs.mkdir(schemaDir, { recursive: true });
 
   const schemaList = buildSchemaList(spec.schemas, resolvedSlug);
 
-  const writes = spec.schemas.map((schema, index) => {
+  for (const [index, schema] of spec.schemas.entries()) {
     if (!schema?.slug) {
       if (logger && typeof logger.warn === 'function') {
         logger.warn('starlight-openapi-navigator: encountered schema without slug - skipping.');
       }
-      return Promise.resolve();
+      continue;
     }
 
     const detailDir = path.join(schemaDir, schema.slug);
@@ -259,27 +264,32 @@ export async function generateSchemaDetailPages(spec, ctx) {
       },
     ];
 
-    return fs
-      .mkdir(detailDir, { recursive: true })
-      .then(() => {
-        const source = buildStarlightPageSource({
-          componentName: 'OpenApiSchemaPage',
-          componentFilename: SCHEMA_DETAIL_COMPONENT,
-          filePath,
-          frontmatter,
-          headings,
-          componentProps: [
-            `schemaData={${serialize(schema)}}`,
-            `schemas={${serialize(schemaList)}}`,
-            `currentSlug=${JSON.stringify(schema.slug)}`,
-            `baseSlug=${JSON.stringify(resolvedSlug)}`,
-          ],
-        });
-        return fs.writeFile(filePath, source, 'utf8');
-      });
-  });
+    const source = buildStarlightPageSource({
+      componentName: 'OpenApiSchemaPage',
+      componentFilename: SCHEMA_DETAIL_COMPONENT,
+      filePath,
+      frontmatter,
+      headings,
+      componentProps: [
+        `schemas={${serialize(schemaList)}}`,
+        `currentSlug=${JSON.stringify(schema.slug)}`,
+        `baseSlug=${JSON.stringify(resolvedSlug)}`,
+      ],
+      componentsDir,
+    });
 
-  await Promise.all(writes);
+    try {
+      await fs.mkdir(detailDir, { recursive: true });
+      await fs.writeFile(filePath, source, 'utf8');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (logger && typeof logger.warn === 'function') {
+        logger.warn(
+          `starlight-openapi-navigator: failed to write schema page at ${filePath} — ${message}`
+        );
+      }
+    }
+  }
 
   const tryDir = path.join(outputDir, 'try');
   await fs.mkdir(tryDir, { recursive: true });
@@ -312,13 +322,14 @@ function buildStarlightPageSource({
   componentProps = [],
   extraScriptLines = [],
   pageAttributes = [],
+  componentsDir = COMPONENTS_DIR,
 }) {
   const pageDir = path.dirname(filePath);
   const componentImportPath = toPosixPath(
     addLeadingDot(
       path.relative(
         pageDir,
-        path.join(COMPONENTS_DIR, componentFilename)
+        path.join(componentsDir, componentFilename)
       )
     )
   );

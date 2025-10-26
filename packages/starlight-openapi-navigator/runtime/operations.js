@@ -16,42 +16,76 @@ import { DEFAULT_BASE_SLUG } from './config.js';
  *   deprecated: boolean;
  * }>}
  */
-export function buildOperationIndex(spec, baseSlug) {
-  if (!spec || typeof spec !== 'object') return [];
+export function buildOperationIndex(source, baseSlug) {
+  if (!source) return [];
   const resolvedSlug =
     typeof baseSlug === 'string' && baseSlug.length ? baseSlug : DEFAULT_BASE_SLUG;
-  const tags = Array.isArray(spec.tags) ? spec.tags : [];
   /** @type {ReturnType<typeof buildOperationIndex>} */
-  const entries = [];
+  let entries = [];
 
-  tags.forEach((tag) => {
-    if (!tag || typeof tag.slug !== 'string') return;
-    const operations = Array.isArray(tag.operations) ? tag.operations : [];
-    const tagName =
-      (tag.metadata && typeof tag.metadata.displayName === 'string'
-        ? tag.metadata.displayName
-        : tag.name) || tag.slug;
+  if (Array.isArray(source)) {
+    entries = source
+      .filter(
+        (operation) =>
+          operation &&
+          typeof operation.slug === 'string' &&
+          typeof operation.tagSlug === 'string' &&
+          operation.tagSlug.length &&
+          operation.slug.length &&
+          operation.path &&
+          operation.method
+      )
+      .map((operation) => {
+        const method = String(operation.method || '').toUpperCase();
+        const path = String(operation.path || '');
+        const summary = typeof operation.summary === 'string' ? operation.summary : '';
+        const tagName =
+          typeof operation.tagName === 'string' && operation.tagName.length
+            ? operation.tagName
+            : operation.tagSlug;
+        const href = `/${resolvedSlug}/${operation.tagSlug}/${operation.slug}/`;
+        return {
+          id: `${operation.tagSlug}/${operation.slug}`,
+          href,
+          tagSlug: operation.tagSlug,
+          tagName,
+          method,
+          path,
+          summary,
+          deprecated: Boolean(operation.deprecated),
+        };
+      });
+  } else if (typeof source === 'object') {
+    const tags = Array.isArray(source.tags) ? source.tags : [];
+    tags.forEach((tag) => {
+      if (!tag || typeof tag.slug !== 'string') return;
+      const operations = Array.isArray(tag.operations) ? tag.operations : [];
+      const tagName =
+        (tag.metadata && typeof tag.metadata.displayName === 'string'
+          ? tag.metadata.displayName
+          : tag.name) || tag.slug;
 
-    operations.forEach((operation) => {
-      if (!operation || typeof operation.slug !== 'string') return;
-      if (!operation.path || !operation.method) return;
+      operations.forEach((operation) => {
+        if (!operation || typeof operation.slug !== 'string') return;
+        if (!operation.path || !operation.method) return;
 
-      const method = String(operation.method || '').toUpperCase();
-      const path = String(operation.path || '');
-      const summary = typeof operation.summary === 'string' ? operation.summary : '';
-      const href = `/${resolvedSlug}/${tag.slug}/${operation.slug}/`;
-      entries.push({
-        id: `${tag.slug}/${operation.slug}`,
-        href,
-        tagSlug: tag.slug,
-        tagName,
-        method,
-        path,
-        summary,
-        deprecated: Boolean(operation.deprecated),
+        const method = String(operation.method || '').toUpperCase();
+        const path = String(operation.path || '');
+        const summary = typeof operation.summary === 'string' ? operation.summary : '';
+        const href = `/${resolvedSlug}/${tag.slug}/${operation.slug}/`;
+        entries.push({
+          id: `${tag.slug}/${operation.slug}`,
+          href,
+          tagSlug: tag.slug,
+          tagName,
+          method,
+          path,
+          summary,
+          deprecated: Boolean(operation.deprecated),
+        });
       });
     });
-  });
+  }
 
   entries.sort((a, b) => {
     if (a.tagName !== b.tagName) {

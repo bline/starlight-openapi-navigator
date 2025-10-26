@@ -5,6 +5,13 @@ import openapi from 'starlight-openapi-navigator';
 
 // https://astro.build/config
 export default defineConfig({
+  site: 'https://bline.github.io',
+  base: '/starlight-openapi-navigator/',
+  vite: {
+    build: {
+      sourcemap: false,
+    },
+  },
 	integrations: [
 		starlight({
 			title: 'My Docs',
@@ -23,20 +30,34 @@ export default defineConfig({
 				},
 			],
       plugins: [
-        openapi({
-					tryIt: false,
-          specPath: 'https://raw.githubusercontent.com/stripe/openapi/refs/heads/master/openapi/spec3.yaml',
-          navigation: {
-            enabled: true,
-            replaceGroupLabel: 'API Explorer',
-            insertBefore: 'Resources',
-            operationLabel: 'path',
-            overviewItem: {
-              label: 'Overview',
-              badge: { text: 'beta', variant: 'note' },
+        openapi([
+          {
+            instanceId: 'stripe',
+            specPath: 'https://raw.githubusercontent.com/stripe/openapi/refs/heads/master/openapi/spec3.yaml',
+            navigation: {
+              enabled: true,
+              groupLabel: 'Stripe',
+              insertBefore: 'Resources',
+              operationLabel: 'path',
+              overviewItem: {
+                label: 'Overview',
+              },
             },
           },
-        }),
+          {
+            instanceId: 'msgraph',
+            specPath: 'https://raw.githubusercontent.com/microsoftgraph/msgraph-metadata/master/openapi/v1.0/openapi.yaml',
+            navigation: {
+              enabled: true,
+              groupLabel: 'Microsoft Graph',
+              insertBefore: 'Resources',
+              operationLabel: 'path',
+              overviewItem: {
+                label: 'Overview',
+              },
+            },
+          }
+        ]),
       ]
 		}),
 	],
