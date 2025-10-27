@@ -9,6 +9,7 @@ Starlight OpenAPI Navigator is a first-class Astro/Starlight integration that tu
 - **Schema explorer** – Dedicated page per schema with `$ref` links and a global searchable selector for quick jumps.
 - **Native Starlight UX** – Uses AnchorHeading, Tabs, ToC, color themes, and search just like any other Starlight page—no iframes or runtime embeds.
 - **Smart navigation** – Optional sidebar injection that groups operations by tag with customizable ordering, labeling, and badges.
+- **Multi-spec aware** – Serve several OpenAPI documents side-by-side with isolated routes (e.g. `/api/stripe`, `/api/msgraph`) and per-spec config.
 - **Developer ergonomics** – Watches your spec in dev, regenerates pages instantly, hydrates code samples per language, and spins up a Vite proxy based on declared servers to bypass dev-time CORS.
 
 ## Why Navigator?
@@ -66,6 +67,51 @@ Starlight OpenAPI Navigator is a first-class Astro/Starlight integration that tu
    ```
 
 During `astro dev`, the spec file is watched for changes and the docs are regenerated automatically.
+
+### Multiple Specs & Nested Layouts
+
+Pass an array to `starlightOpenApiNavigator` to generate multiple API references in one site. When more than one spec is configured the plugin automatically nests each set of pages under `<baseSlug>/<instanceId>` so routes do not collide and rebuilds can safely remove old folders. You can override the behavior per spec with `nestUnderBase`:
+
+```ts
+plugins: [
+  starlightOpenApiNavigator([
+    {
+      instanceId: 'stripe',
+      specPath: 'https://raw.githubusercontent.com/stripe/openapi/refs/heads/master/openapi/spec3.yaml',
+      nestUnderBase: true,   // emits /api/stripe/…
+    },
+    {
+      instanceId: 'msgraph',
+      specPath: 'https://raw.githubusercontent.com/microsoftgraph/msgraph-metadata/master/openapi/v1.0/openapi.yaml',
+      operations: {
+        include: [{ pathStartsWith: '/users' }],
+      },
+      nestUnderBase: true,   // emits /api/msgraph/…
+    },
+  ]),
+];
+```
+
+With a single spec `nestUnderBase` defaults to `false` so you retain the classic `/api/...` layout; set it to `true` if you prefer the grouped structure even when only one document is present.
+
+### Filtering Operations
+
+Massive OpenAPI documents are common (15k+ operations in Microsoft Graph). Use the `operations` option to pare them down without editing the source spec. `include` acts as an allow list, while `exclude` removes matching operations after the include step. Matchers can be simple strings (treated as `pathStartsWith`) or objects with `path`, `pathStartsWith`, `slug`, and `method`/`methods` keys:
+
+```js
+operations: {
+  include: [
+    '/users',
+    { pathStartsWith: '/me', methods: ['GET', 'PATCH'] },
+    { slug: 'groups-list' },
+  ],
+  exclude: [
+    { path: '/users/{id}/messages' },
+  ],
+}
+```
+
+Anything not matched by `include` is omitted; anything matched by `exclude` is removed even if it was included earlier.
 
 ## Remote Spec URLs
 
@@ -131,6 +177,7 @@ starlight({
       specPath: 'public/openapi.yaml',
       watchSpec: true,
       baseSlug: 'api',
+      nestUnderBase: true,
       outputDir: 'src/pages/api',
       tags: {
         include: ['payments'],
@@ -150,6 +197,15 @@ starlight({
           javascript: 'Node.js',
           python: 'Python 3',
         },
+      },
+      operations: {
+        include: [
+          '/payments',
+          { pathStartsWith: '/balances', methods: ['GET'] },
+        ],
+        exclude: [
+          { path: '/payments/internal' },
+        ],
       },
       navigation: {
         enabled: true,
@@ -184,9 +240,11 @@ Key behaviors:
 - `baseSlug` controls the route prefix (`/api/...`) and `outputDir` can redirect the generated files elsewhere.
 - `tags.include/exclude/order` filter and prioritize tag groups; `tags.overrides` can rename labels/descriptions.
 - `codeSamples.includeLanguages` narrows languages; `codeSamples.rename` renames sample tabs (case-insensitive).
+- `operations.include` / `operations.exclude` accept strings (treated as leading path prefixes) or matcher objects (`{ path, pathStartsWith, slug, method, methods }`) so you can slim massive specs down to the endpoints you care about.
 - `navigation.enabled` injects the generated hierarchy into the Starlight sidebar, with options to replace or reposition groups.
 - `navigation.schemasItem = false` removes the schemas entry entirely.
 - `endpointUI` toggles endpoint navigation (`menu`, `search`, or `auto`). Auto switches to search mode once the spec exceeds 20 operations.
+- `nestUnderBase` (default `true` when multiple specs are configured) emits pages under `<baseSlug>/<instanceId>` and keeps rebuilds tidy; set it explicitly per spec to opt in or out.
 
 ## Project Layout
 
