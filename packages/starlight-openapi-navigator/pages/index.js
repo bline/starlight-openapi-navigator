@@ -183,7 +183,11 @@ export async function generateOperationPages(spec, ctx) {
 
 export async function generateSchemaIndexPage(spec, ctx) {
   if (!Array.isArray(spec.schemas) || spec.schemas.length === 0) return;
-  const { outputDir, baseSlug, componentsDir = COMPONENTS_DIR } = ctx;
+  const {
+    outputDir,
+    baseSlug,
+    componentsDir = COMPONENTS_DIR,
+  } = ctx;
   const resolvedSlug = baseSlug || DEFAULT_BASE_SLUG;
 
   const schemaDir = path.join(outputDir, SCHEMAS_DIRNAME);
@@ -227,7 +231,12 @@ export async function generateSchemaIndexPage(spec, ctx) {
 
 export async function generateSchemaDetailPages(spec, ctx) {
   if (!Array.isArray(spec.schemas) || spec.schemas.length === 0) return;
-  const { outputDir, baseSlug, logger, componentsDir = COMPONENTS_DIR } = ctx;
+  const {
+    outputDir,
+    baseSlug,
+    logger,
+    componentsDir = COMPONENTS_DIR,
+  } = ctx;
   const resolvedSlug = baseSlug || DEFAULT_BASE_SLUG;
   const schemaDir = path.join(outputDir, SCHEMAS_DIRNAME);
   await fs.mkdir(schemaDir, { recursive: true });
@@ -242,13 +251,14 @@ export async function generateSchemaDetailPages(spec, ctx) {
       continue;
     }
 
+    const displayName = schema.displayName || schema.name || schema.slug;
     const detailDir = path.join(schemaDir, schema.slug);
     const filePath = path.join(detailDir, PAGE_FILENAME);
     const frontmatter = {
-      title: schema.name ? `${schema.name} schema` : 'API schema',
+      title: displayName ? `${displayName} schema` : 'API schema',
       description: schema.description
         ? truncate(stripMarkdown(schema.description), 240)
-        : `Reference for the ${schema.name || schema.slug} schema.`,
+        : `Reference for the ${displayName || schema.slug} schema.`,
       slug: `${resolvedSlug}/schemas/${schema.slug}`,
       sidebar: {
         hidden: true,
@@ -260,9 +270,12 @@ export async function generateSchemaDetailPages(spec, ctx) {
       {
         depth: 2,
         slug: schema.slug,
-        text: schema.name || schema.slug,
+        text: displayName || schema.slug,
       },
     ];
+
+    const currentEntry = schemaList.find((item) => item.slug === schema.slug) || null;
+    const initialPickerSchemas = currentEntry ? [currentEntry] : [];
 
     const source = buildStarlightPageSource({
       componentName: 'OpenApiSchemaPage',
@@ -271,9 +284,10 @@ export async function generateSchemaDetailPages(spec, ctx) {
       frontmatter,
       headings,
       componentProps: [
-        `schemas={${serialize(schemaList)}}`,
+        `schemas={${serialize(initialPickerSchemas)}}`,
         `currentSlug=${JSON.stringify(schema.slug)}`,
         `baseSlug=${JSON.stringify(resolvedSlug)}`,
+        'hydrateOnClient={true}',
       ],
       componentsDir,
     });
@@ -428,10 +442,14 @@ function buildSchemaList(schemas, baseSlug) {
   const entries = schemas
     .filter((schema) => schema && typeof schema.slug === 'string' && schema.slug.length)
     .map((schema) => {
-      const name = schema.name || schema.slug;
+      const name =
+        (typeof schema.displayName === 'string' && schema.displayName.trim())
+          ? schema.displayName.trim()
+          : schema.name || schema.slug;
       const href = joinUrlSegments(baseSlug, 'schemas', schema.slug);
       return {
         name,
+        originalName: schema.name,
         slug: schema.slug,
         href,
       };

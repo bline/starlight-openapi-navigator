@@ -1,4 +1,4 @@
-import { DEFAULT_BASE_SLUG } from './config.js';
+import { DEFAULT_BASE_SLUG, buildSpecPath } from './config.js';
 
 /**
  * Build a flattened index of operations for client-side navigation helpers.
@@ -43,7 +43,7 @@ export function buildOperationIndex(source, baseSlug) {
           typeof operation.tagName === 'string' && operation.tagName.length
             ? operation.tagName
             : operation.tagSlug;
-        const href = `/${resolvedSlug}/${operation.tagSlug}/${operation.slug}/`;
+        const href = buildSpecPath(resolvedSlug, operation.tagSlug, operation.slug);
         return {
           id: `${operation.tagSlug}/${operation.slug}`,
           href,
@@ -72,7 +72,7 @@ export function buildOperationIndex(source, baseSlug) {
         const method = String(operation.method || '').toUpperCase();
         const path = String(operation.path || '');
         const summary = typeof operation.summary === 'string' ? operation.summary : '';
-        const href = `/${resolvedSlug}/${tag.slug}/${operation.slug}/`;
+        const href = buildSpecPath(resolvedSlug, tag.slug, operation.slug);
         entries.push({
           id: `${tag.slug}/${operation.slug}`,
           href,

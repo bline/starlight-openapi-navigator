@@ -11,7 +11,7 @@ import AnchorHeading from '@astrojs/starlight/components/AnchorHeading.astro';
 
 import OpenApiEndpointSearch from './OpenApiEndpointSearch.astro';
 
-import { DEFAULT_BASE_SLUG } from '../runtime/config.js';
+import { DEFAULT_BASE_SLUG, buildSpecHref, buildSpecPath } from '../runtime/config.js';
 import { resolveEndpointUIMode } from '../runtime/endpoint-ui.js';
 import { stripHtml, renderMarkdownLinks } from '../runtime/text.js';
 import '../runtime/try-it.css';
@@ -55,9 +55,12 @@ const resolvedTagSlug = (fetchedTagSlug && fetchedTagSlug.trim())
 const operationHeadingId = selectedOperation?.slug || operationSlug || 'operation';
 
 const tryItEnabled = generatedConfig?.tryIt?.enabled !== false;
+const overviewHref = buildSpecPath(configuredSlug);
+const tryItBaseHref = buildSpecPath(configuredSlug, 'try');
+const schemasHref = buildSpecHref(configuredSlug, 'schemas');
 
 const tryItHref = tryItEnabled && selectedOperation
-  ? `/${configuredSlug}/try/?operation=${encodeURIComponent(selectedOperation.slug)}&tag=${encodeURIComponent(resolvedTagSlug)}`
+  ? `${tryItBaseHref}?operation=${encodeURIComponent(selectedOperation.slug)}&tag=${encodeURIComponent(resolvedTagSlug)}`
   : '';
 
 const tryItAnchorId = selectedOperation ? `${selectedOperation.slug}-try-it` : 'try-it';
@@ -165,7 +168,7 @@ const getParameterTypeInfo = (param) => {
   if (schemaRef) {
     return {
       label: schemaRef.name,
-      href: `/${configuredSlug}/schemas#${schemaRef.slug}`,
+      href: `${schemasHref}#${schemaRef.slug}`,
     };
   }
   return {
@@ -328,7 +331,7 @@ const LANGUAGE_STORAGE_KEY = 'starlight-preferred-lang';
       Unable to find the <code>{operationSlug}</code> operation.
     </p>
     <p>
-      Return to the <a href={`/${configuredSlug}/`}>API overview</a> to browse available endpoints.
+      Return to the <a href={overviewHref}>API overview</a> to browse available endpoints.
     </p>
   </div>
 )}
@@ -476,7 +479,7 @@ const LANGUAGE_STORAGE_KEY = 'starlight-preferred-lang';
                           →{' '}
                           <a
                             class="api-schema-link"
-                            href={`/${configuredSlug}/schemas#${schemaRef.slug}`}
+                            href={`${schemasHref}#${schemaRef.slug}`}
                           >
                             {schemaRef.name}
                           </a>
@@ -583,7 +586,7 @@ const LANGUAGE_STORAGE_KEY = 'starlight-preferred-lang';
                                       →{' '}
                                       <a
                                         class="api-schema-link"
-                                        href={`/${configuredSlug}/schemas#${schemaRef.slug}`}
+                                        href={`${schemasHref}#${schemaRef.slug}`}
                                       >
                                         {schemaRef.name}
                                       </a>

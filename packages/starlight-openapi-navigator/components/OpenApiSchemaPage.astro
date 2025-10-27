@@ -1,9 +1,13 @@
 ---
 import '../runtime/theme.css';
-import { Icon } from '@astrojs/starlight/components';
+import { Icon, Tabs, TabItem, Code } from '@astrojs/starlight/components';
 import AnchorHeading from '@astrojs/starlight/components/AnchorHeading.astro';
 
-import { loadSchemas, loadSchemaDefinition } from 'virtual:starlight-openapi-navigator/spec-data';
+import {
+  loadSchemas,
+  loadSchemaDefinition,
+  loadSchemaSlugMap,
+} from 'virtual:starlight-openapi-navigator/spec-data';
 import { renderMarkdownLinks } from '../runtime/text.js';
 import SchemaPicker from './OpenApiSchemaPicker.astro';
 import SchemaNode from './OpenApiSchemaNode.astro';
@@ -12,6 +16,7 @@ const {
   schemas = [],
   currentSlug = null,
   baseSlug = 'api',
+  hydrateOnClient = false,
 } = Astro.props;
 
 const schemaSlug = currentSlug || 'schema';
@@ -29,15 +34,38 @@ const normalizedSchema = schemaDefinition && typeof schemaDefinition === 'object
   ? schemaDefinition
   : null;
 
-const slugMap = new Map(
-  Array.isArray(schemas)
-    ? schemas
-        .filter((entry) => entry && typeof entry.name === 'string' && typeof entry.slug === 'string')
-        .map((entry) => [entry.name, entry.slug])
-    : []
-);
+const slugMap = new Map();
+if (Array.isArray(schemas)) {
+  schemas.forEach((entry) => {
+    if (!entry || typeof entry.slug !== 'string') return;
+    if (typeof entry.name === 'string' && entry.name.length) {
+      slugMap.set(entry.name, entry.slug);
+    }
+    if (typeof entry.originalName === 'string' && entry.originalName.length) {
+      slugMap.set(entry.originalName, entry.slug);
+      const pointerKey = entry.originalName.replace(/~/g, '~0').replace(/\//g, '~1');
+      slugMap.set(pointerKey, entry.slug);
+    }
+  });
+}
+const globalSlugMap = await loadSchemaSlugMap().catch(() => null);
+if (globalSlugMap instanceof Map) {
+  globalSlugMap.forEach((slug, name) => {
+    if (typeof name === 'string' && typeof slug === 'string' && slug.length) {
+      slugMap.set(name, slug);
+      const pointerKey = name.replace(/~/g, '~0').replace(/\//g, '~1');
+      slugMap.set(pointerKey, slug);
+      slugMap.set(slug, slug);
+    }
+  });
+}
 slugMap.set(schemaSlug, schemaSlug);
 slugMap.set(schemaName, schemaSlug);
+if (schemaMeta && typeof schemaMeta.originalName === 'string' && schemaMeta.originalName.length) {
+  slugMap.set(schemaMeta.originalName, schemaSlug);
+  const pointerKey = schemaMeta.originalName.replace(/~/g, '~0').replace(/\//g, '~1');
+  slugMap.set(pointerKey, schemaSlug);
+}
 ---
 
 <div class="schema-page sl-markdown-content">
@@ -47,6 +75,8 @@ slugMap.set(schemaName, schemaSlug);
       currentSlug={schemaSlug}
       size="compact"
       label="Browse schemas"
+      hydrateOnClient={hydrateOnClient}
+      baseSlug={baseSlug}
     />
   </section>
 
@@ -58,26 +88,51 @@ slugMap.set(schemaName, schemaSlug);
 {schemaDescriptionHtml && <p set:html={schemaDescriptionHtml}></p>}
 
 {normalizedSchema ? (
-  <div class="schema-page__tree" data-schema-tree>
-    <div class="schema-page__toolbar">
-      <button
-        type="button"
-        class="schema-page__toggle"
-        data-schema-toggle
-        aria-pressed="false"
-      >
-        <Icon
-          name="right-caret"
-          size="1rem"
-          aria-hidden="true"
-          data-schema-toggle-icon
-        />
-        <span data-schema-toggle-label>Expand All</span>
-      </button>
-    </div>
-    <ul class="schema-tree">
-      <SchemaNode name={null} schema={normalizedSchema} depth={0} slugMap={slugMap} />
-    </ul>
+  <div class="schema-page__tabs" data-schema-tabs>
+    <Tabs syncKey={`schema-${schemaSlug}`}>
+      <TabItem label="Structure" data-hash="schema-structure">
+        <div id="schema-structure">
+          <div class="schema-page__tree" data-schema-tree-wrapper>
+            <div class="schema-page__toolbar">
+              <button
+              type="button"
+              class="schema-page__toggle"
+              data-schema-toggle
+              aria-pressed="false"
+            >
+              <Icon
+                name="right-caret"
+                size="1rem"
+                aria-hidden="true"
+                data-schema-toggle-icon
+              />
+              <span data-schema-toggle-label>Expand All</span>
+            </button>
+          </div>
+          <div data-schema-tree>
+            <ul class="schema-tree">
+              <SchemaNode
+                name={null}
+                schema={normalizedSchema}
+                depth={0}
+                slugMap={slugMap}
+                baseSlug={baseSlug}
+              />
+            </ul>
+          </div>
+        </div>
+      </div>
+    </TabItem>
+    {schemaDefinition && typeof schemaDefinition === 'object' ? (
+      <TabItem label="Raw JSON" data-hash="schema-raw">
+        <div id="schema-raw" class="schema-page__raw">
+          <div class="schema-page__raw-content">
+            <Code code={JSON.stringify(schemaDefinition, null, 2)} lang="json" />
+          </div>
+        </div>
+      </TabItem>
+    ) : null}
+    </Tabs>
   </div>
 ) : (
   <p class="schema-page__empty">This schema does not contain any structured fields.</p>
@@ -86,6 +141,14 @@ slugMap.set(schemaName, schemaSlug);
 </div>
 
 <style scoped>
+ul.schema-tree {
+  list-style: none;
+  margin: 0;
+  padding-inline-start: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
 .schema-page {
   display: flex;
   flex-direction: column;
@@ -109,6 +172,34 @@ slugMap.set(schemaName, schemaSlug);
   border-radius: 0.75rem;
   padding: 1rem 1.25rem;
   background: var(--color-bg-muted, color-mix(in srgb, var(--color-bg, #0f1115) 90%, #ffffff 10%));
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.schema-page__tabs starlight-tabs {
+  display: block;
+}
+
+.schema-page__raw {
+  border: 1px solid color-mix(in srgb, var(--color-border, #2f353d) 70%, transparent);
+  border-radius: 0.6rem;
+  background: var(--color-bg, #0f1115);
+  overflow: hidden;
+}
+
+.schema-page__raw-content {
+  max-height: 22rem;
+  overflow: auto;
+  padding: 0.75rem 0.9rem 0.85rem;
+  background: color-mix(in srgb, var(--color-bg, #0f1115) 96%, #ffffff 4%);
+}
+
+.schema-page__raw-content pre {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  tab-size: 2;
 }
 
 .schema-page__toolbar {
@@ -160,61 +251,91 @@ slugMap.set(schemaName, schemaSlug);
 
 <script is:inline>
   (() => {
-    const wrapper = document.currentScript?.previousElementSibling;
-    if (!(wrapper instanceof HTMLElement)) return;
-    const toggle = wrapper.querySelector('[data-schema-toggle]');
-    const tree = wrapper.querySelector('[data-schema-tree]');
-    if (!(toggle instanceof HTMLButtonElement) || !(tree instanceof HTMLElement)) {
-      return;
+    const treeWrapper = document.querySelector('[data-schema-tree-wrapper]');
+    const toggle = treeWrapper?.querySelector('[data-schema-toggle]');
+    const tree = treeWrapper?.querySelector('[data-schema-tree]');
+
+    if (toggle instanceof HTMLButtonElement && tree instanceof HTMLElement) {
+      const label = toggle.querySelector('[data-schema-toggle-label]');
+      const getDetails = () => Array.from(tree.querySelectorAll('details.schema-node__details'));
+
+      const setState = (expanded) => {
+        toggle.dataset.state = expanded ? 'expanded' : 'collapsed';
+        toggle.setAttribute('aria-pressed', expanded ? 'true' : 'false');
+        if (label instanceof HTMLElement) {
+          label.textContent = expanded ? 'Collapse All' : 'Expand All';
+        }
+      };
+
+      const computeExpanded = () => {
+        const details = getDetails();
+        if (details.length === 0) return false;
+        return details.every((node) => node.open);
+      };
+
+      const handleToggle = () => {
+        const shouldExpand = toggle.dataset.state !== 'expanded';
+        const details = getDetails();
+        details.forEach((node) => {
+          node.open = shouldExpand;
+        });
+        setState(shouldExpand);
+      };
+
+      toggle.addEventListener('click', (event) => {
+        event.preventDefault();
+        handleToggle();
+      });
+
+      tree.addEventListener(
+        'toggle',
+        (event) => {
+          if (event.target instanceof HTMLElement && event.target.matches('details.schema-node__details')) {
+            setState(computeExpanded());
+          }
+        },
+        true
+      );
+
+      const details = getDetails();
+      if (details.length === 0) {
+        toggle.hidden = true;
+      } else {
+        setState(computeExpanded());
+      }
     }
 
-    const label = toggle.querySelector('[data-schema-toggle-label]');
+    const tabsRoot = document.querySelector('[data-schema-tabs] starlight-tabs');
+    if (tabsRoot instanceof HTMLElement) {
+      const tabs = Array.from(tabsRoot.querySelectorAll('[role="tab"]'));
+      const panels = Array.from(tabsRoot.querySelectorAll(':scope > [role="tabpanel"]'));
+      const switchFn = typeof tabsRoot.switchTab === 'function' ? tabsRoot.switchTab.bind(tabsRoot) : null;
 
-    const getDetails = () => Array.from(tree.querySelectorAll('details.schema-node__details'));
-
-    const setState = (expanded) => {
-      toggle.dataset.state = expanded ? 'expanded' : 'collapsed';
-      toggle.setAttribute('aria-pressed', expanded ? 'true' : 'false');
-      if (label instanceof HTMLElement) {
-        label.textContent = expanded ? 'Collapse All' : 'Expand All';
-      }
-    };
-
-    const computeExpanded = () => {
-      const details = getDetails();
-      if (details.length === 0) return false;
-      return details.every((node) => node.open);
-    };
-
-    const handleToggle = () => {
-      const shouldExpand = toggle.dataset.state !== 'expanded';
-      const details = getDetails();
-      details.forEach((node) => {
-        node.open = shouldExpand;
-      });
-      setState(shouldExpand);
-    };
-
-    toggle.addEventListener('click', (event) => {
-      event.preventDefault();
-      handleToggle();
-    });
-
-    tree.addEventListener(
-      'toggle',
-      (event) => {
-        if (event.target instanceof HTMLElement && event.target.matches('details.schema-node__details')) {
-          setState(computeExpanded());
+      const switchToPanel = (panel) => {
+        if (!panel) return;
+        const index = panels.indexOf(panel);
+        if (index === -1) return;
+        const tab = tabs[index];
+        if (!(tab instanceof HTMLAnchorElement)) return;
+        if (switchFn) {
+          switchFn(tab, index, true);
+        } else {
+          tab.click();
         }
-      },
-      true
-    );
+      };
 
-    const details = getDetails();
-    if (details.length === 0) {
-      toggle.hidden = true;
-    } else {
-      setState(computeExpanded());
+      const activateFromHash = (hash) => {
+        const clean = (hash || '').replace(/^#/, '');
+        if (!clean) return;
+        const target = document.getElementById(clean);
+        if (!target) return;
+        const panel = target.closest('[role="tabpanel"]');
+        if (!(panel instanceof HTMLElement)) return;
+        switchToPanel(panel);
+      };
+
+      activateFromHash(window.location.hash);
+      window.addEventListener('hashchange', () => activateFromHash(window.location.hash));
     }
   })();
 </script>

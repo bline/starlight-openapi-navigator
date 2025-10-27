@@ -6,7 +6,7 @@ import spec, {
 } from 'virtual:starlight-openapi-navigator/spec-data';
 import generatedConfig from 'virtual:starlight-openapi-navigator/config';
 import '../runtime/theme.css';
-import { DEFAULT_BASE_SLUG } from '../runtime/config.js';
+import { DEFAULT_BASE_SLUG, buildSpecHref, buildSpecPath } from '../runtime/config.js';
 import { resolveEndpointUIMode } from '../runtime/endpoint-ui.js';
 import { stripHtml, renderMarkdownLinks } from '../runtime/text.js';
 import OpenApiEndpointSearch from './OpenApiEndpointSearch.astro';
@@ -53,7 +53,9 @@ const defaultSecurity = Array.isArray(spec.document?.security)
 const configuredSlug = typeof generatedConfig?.baseSlug === 'string' && generatedConfig.baseSlug.length
   ? generatedConfig.baseSlug
   : DEFAULT_BASE_SLUG;
-const baseHref = `/${configuredSlug}`;
+const buildOperationHref = (tagSlug, operationSlug) =>
+  buildSpecPath(configuredSlug, tagSlug, operationSlug);
+const schemasHref = buildSpecHref(configuredSlug, 'schemas');
 const getTagDisplayName = (tag) => tag?.metadata?.displayName ?? tag.name;
 const tagGroups = Array.isArray(allTags)
   ? allTags.map((tag) => ({
@@ -167,7 +169,7 @@ clearTagsCache();
                   <li>
                     <a
                       class="api-overview__operation-link"
-                      href={`${baseHref}/${tag.slug}/${operation.slug}/`}
+                      href={buildOperationHref(tag.slug, operation.slug)}
                     >
                       <span class={`api-overview__operation-method api-overview__operation-method--${operation.method.toLowerCase()}`}>
                         {operation.method}
@@ -205,7 +207,7 @@ clearTagsCache();
       <h2 id="schemas">Component schemas</h2>
       <p>
         Inspect reusable objects, error shapes, and payload contracts in the{' '}
-        <a href={`${baseHref}/schemas`}>schema explorer</a>.
+        <a href={schemasHref}>schema explorer</a>.
       </p>
     </section>
   )}

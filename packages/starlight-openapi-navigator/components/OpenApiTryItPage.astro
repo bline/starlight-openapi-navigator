@@ -3,10 +3,12 @@ import AnchorHeading from '@astrojs/starlight/components/AnchorHeading.astro';
 import generatedConfig from 'virtual:starlight-openapi-navigator/config';
 import '../runtime/theme.css';
 import '../runtime/try-it.css';
+import { buildSpecPath } from '../runtime/config.js';
 
 const configuredSlug = typeof generatedConfig?.baseSlug === 'string' && generatedConfig.baseSlug.length
   ? generatedConfig.baseSlug
   : 'api';
+const overviewHref = buildSpecPath(configuredSlug);
 ---
 
 <div class="tryit-page sl-markdown-content">
@@ -14,7 +16,7 @@ const configuredSlug = typeof generatedConfig?.baseSlug === 'string' && generate
     This page hydrates on the client to keep builds fast. If you don’t see the interactive form, enable JavaScript and reload.
   </p>
   <p class="tryit-page__hint">
-    Looking for another endpoint? <a href={`/${configuredSlug}/`}>Return to the API reference</a>.
+    Looking for another endpoint? <a href={overviewHref}>Return to the API reference</a>.
   </p>
   <div id="tryit-root" class="tryit-page__client" data-tryit-root>
     <noscript>
@@ -24,4 +26,3 @@ const configuredSlug = typeof generatedConfig?.baseSlug === 'string' && generate
 </div>
 
 <script src='../runtime/try-it-client.js'></script>
-

@@ -18,7 +18,11 @@ const schemaCount = Array.isArray(schemas) ? schemas.length : 0;
         ? 'No reusable schemas were found in this specification.'
         : `Browse ${schemaCount} reusable schema${schemaCount === 1 ? '' : 's'} from the OpenAPI document.`}
     </p>
-    <SchemaPicker schemas={schemas} size="wide" />
+    <SchemaPicker
+      schemas={schemas}
+      size="wide"
+      baseSlug={baseSlug}
+    />
   </section>
   <section class="schema-index__help">
     <h3>How to use</h3>

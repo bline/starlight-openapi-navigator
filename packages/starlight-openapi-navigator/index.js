@@ -17,6 +17,74 @@ import {
 const PACKAGE_ROOT = fileURLToPath(new URL('.', import.meta.url));
 const PACKAGE_COMPONENTS_DIR = path.join(PACKAGE_ROOT, 'components');
 const PACKAGE_RUNTIME_DIR = path.join(PACKAGE_ROOT, 'runtime');
+const CLEANED_CODEGEN_DIRS = new Set();
+const SCHEMA_REF_PATTERN = /^#\/components\/schemas\/(.+)$/;
+const REF_SCAN_SKIP_KEYS = new Set(['raw']);
+let baseSpecAliasAssigned = false;
+let baseConfigAliasAssigned = false;
+
+function collectSchemaRefs(value, target, skipKeys = REF_SCAN_SKIP_KEYS, seen) {
+  if (!value) return;
+  if (typeof value === 'string') {
+    const match = SCHEMA_REF_PATTERN.exec(value);
+    if (match && match[1]) {
+      target.add(match[1]);
+    }
+    return;
+  }
+  if (typeof value !== 'object') return;
+  if (!seen) {
+    seen = new WeakSet();
+  } else if (seen.has(value)) {
+    return;
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    value.forEach((entry) => collectSchemaRefs(entry, target, skipKeys, seen));
+    return;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (skipKeys && skipKeys.has(key)) continue;
+    collectSchemaRefs(child, target, skipKeys, seen);
+  }
+}
+
+function decodeSchemaPointer(value) {
+  if (typeof value !== 'string') return '';
+  return value.replace(/~1/g, '/').replace(/~0/g, '~');
+}
+
+function resolveSchemaDependencies(initialNames, schemaMap) {
+  const resolved = new Set();
+  const queue = Array.isArray(initialNames) ? [...initialNames] : Array.from(initialNames || []);
+  while (queue.length) {
+    const rawName = queue.pop();
+    const name = decodeSchemaPointer(rawName);
+    if (!name || resolved.has(name)) continue;
+    const schemaEntry = schemaMap.get(name);
+    if (!schemaEntry) continue;
+    resolved.add(name);
+    const nestedRefs = new Set();
+    collectSchemaRefs(schemaEntry.schema, nestedRefs);
+    nestedRefs.forEach((refName) => {
+      const decoded = decodeSchemaPointer(refName);
+      if (!decoded) return;
+      if (!resolved.has(decoded) && schemaMap.has(decoded)) {
+        queue.push(decoded);
+      }
+    });
+  }
+  return resolved;
+}
+
+function pruneSchemaPayloads(spec) {
+  if (!spec || !Array.isArray(spec.schemas)) return;
+  spec.schemas.forEach((schema) => {
+    if (schema && typeof schema === 'object' && 'schema' in schema) {
+      delete schema.schema;
+    }
+  });
+}
 
 function sanitizeInstanceId(value) {
   const normalized = String(value ?? '')
@@ -86,6 +154,62 @@ async function copyTemplateDir(srcDir, destDir, replacements = []) {
   }
 }
 
+async function cleanupNestedRoots(rootMap) {
+  for (const [rootDir, allowedInstances] of rootMap.entries()) {
+    try {
+      const entries = await fs.readdir(rootDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (allowedInstances.has(entry.name)) continue;
+        const fullPath = path.join(rootDir, entry.name);
+        await fs.rm(fullPath, { recursive: true, force: true });
+      }
+    } catch (error) {
+      if (error && error.code === 'ENOENT') {
+        continue;
+      }
+      console.warn(
+        `starlight-openapi-navigator: unable to clean nested root ${rootDir} — ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+}
+
+async function cleanupLegacyInstanceDir(instanceId) {
+  if (!instanceId) return;
+  const legacyDir = path.join(process.cwd(), 'src', 'pages', instanceId);
+  try {
+    const stats = await fs.stat(legacyDir);
+    if (!stats.isDirectory()) return;
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return;
+    }
+    console.warn(
+      `starlight-openapi-navigator: unable to inspect legacy directory ${legacyDir} — ${error instanceof Error ? error.message : String(error)}`
+    );
+    return;
+  }
+
+  const indexPath = path.join(legacyDir, 'index.astro');
+  try {
+    const content = await fs.readFile(indexPath, 'utf8');
+    if (
+      content.includes('OpenApiOverview') &&
+      content.includes('starlight-openapi-navigator')
+    ) {
+      await fs.rm(legacyDir, { recursive: true, force: true });
+    }
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return;
+    }
+    console.warn(
+      `starlight-openapi-navigator: unable to inspect legacy page ${indexPath} — ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
 /**
  * @typedef {object} StarlightOpenApiNavigatorOptions
  * @property {string} [specPath] Path to the OpenAPI specification. Defaults to `public/openapi.yaml`.
@@ -105,6 +229,10 @@ async function copyTemplateDir(srcDir, destDir, replacements = []) {
  * @property {'summary'|'path'} [navigation.operationTitle] Controls the hover title text. Defaults to the opposite of `operationLabel`.
  * @property {object|false} [navigation.overviewItem] Override or disable the Overview sidebar entry.
  * @property {object|false} [navigation.schemasItem] Override or disable the Schemas sidebar entry.
+ * @property {boolean} [nestUnderBase] When true, emits docs under `<baseSlug>/<instanceId>`.
+ * @property {object} [operations] Advanced operation filters.
+ * @property {Array<string|{slug?:string,path?:string,pathStartsWith?:string,method?:string,methods?:Array<string>}>} [operations.include]
+ * @property {Array<string|{slug?:string,path?:string,pathStartsWith?:string,method?:string,methods?:Array<string>}>} [operations.exclude]
  */
 
 /**
@@ -127,9 +255,11 @@ export function createOpenApiIntegration(options = {}) {
 
 export function starlightOpenApiNavigator(rawOptions = {}) {
   const entries = normalizeIntegrationEntries(rawOptions);
+  const defaultNestUnderBase = entries.length > 1;
   const resolvedEntries = entries.map((entry) =>
     resolveOptions(entry.options, {
       instanceId: entry.instanceId,
+      defaultNestUnderBase,
     })
   );
   const integrations = resolvedEntries.map((resolved) => createIntegration(resolved));
@@ -138,6 +268,24 @@ export function starlightOpenApiNavigator(rawOptions = {}) {
     name: 'starlight-openapi-navigator',
     hooks: {
       'config:setup': async ({ addIntegration, updateConfig, config, logger }) => {
+        const nestedRootMap = new Map();
+        resolvedEntries.forEach((resolved) => {
+          if (!resolved.nestUnderBase || !resolved.generatedDocsRootDir) return;
+          if (!nestedRootMap.has(resolved.generatedDocsRootDir)) {
+            nestedRootMap.set(resolved.generatedDocsRootDir, new Set());
+          }
+          nestedRootMap.get(resolved.generatedDocsRootDir).add(resolved.instanceId);
+        });
+        if (nestedRootMap.size) {
+          await cleanupNestedRoots(nestedRootMap);
+        }
+
+        await Promise.all(
+          resolvedEntries
+            .filter((resolved) => resolved.nestUnderBase)
+            .map((resolved) => cleanupLegacyInstanceDir(resolved.instanceId))
+        );
+
         integrations.forEach((integration) => addIntegration(integration));
 
         let sidebar = cloneSidebar(config?.sidebar);
@@ -206,16 +354,46 @@ async function runWithLimit(tasks, limit = 16) {
 
 function resolveOptions(options = {}, extras = {}) {
   const instanceId = sanitizeInstanceId(extras.instanceId ?? 'default');
-  const baseSlugInput = typeof options.baseSlug === 'string' && options.baseSlug.trim().length
+  const defaultNest = extras.defaultNestUnderBase === true;
+  const nestUnderBase = options?.nestUnderBase === undefined
+    ? defaultNest
+    : options.nestUnderBase === true;
+
+  const baseSlugRootInput = typeof options.baseSlug === 'string' && options.baseSlug.trim().length
     ? options.baseSlug
-    : instanceId;
-  const baseSlug = normalizeBaseSlug(baseSlugInput);
-  const defaultOutputDir = options.outputDir ?? path.join('src', 'pages', ...slugToSegments(baseSlug));
+    : nestUnderBase
+      ? 'api'
+      : instanceId;
+  const baseSlugRoot = normalizeBaseSlug(baseSlugRootInput);
+  const baseSlug = nestUnderBase
+    ? normalizeBaseSlug(`${baseSlugRoot}/${instanceId}`)
+    : baseSlugRoot;
+
+  let outputDir;
+  let rootOutputDir;
+  if (typeof options.outputDir === 'string' && options.outputDir.trim().length) {
+    const trimmed = options.outputDir.trim();
+    if (nestUnderBase) {
+      rootOutputDir = trimmed;
+      outputDir = path.join(trimmed, instanceId);
+    } else {
+      rootOutputDir = trimmed;
+      outputDir = trimmed;
+    }
+  } else {
+    const baseSegments = slugToSegments(baseSlug);
+    outputDir = path.join('src', 'pages', ...baseSegments);
+    rootOutputDir = nestUnderBase
+      ? path.join('src', 'pages', ...slugToSegments(baseSlugRoot))
+      : outputDir;
+  }
+
   const navigation = normalizeNavigationOptions(options.navigation, baseSlug);
   const specPath = options.specPath ?? 'public/openapi.yaml';
   const specSource = resolveSpecSource(specPath);
   const endpointUI = normalizeEndpointUI(options.endpointUI);
   const tryIt = normalizeTryItOptions(options.tryIt);
+  const operationFilters = normalizeOperationFilters(options.operations);
 
   const resolved = {
     specPath,
@@ -223,7 +401,7 @@ function resolveOptions(options = {}, extras = {}) {
     specLabel: formatSpecLabel(specSource),
     watchSpec: options.watchSpec ?? true,
     baseSlug,
-    outputDir: defaultOutputDir,
+    outputDir,
     tags: {
       include: Array.isArray(options.tags?.include) ? [...options.tags.include] : null,
       exclude: Array.isArray(options.tags?.exclude) ? [...options.tags.exclude] : null,
@@ -239,6 +417,7 @@ function resolveOptions(options = {}, extras = {}) {
     endpointUI,
     navigation,
     tryIt,
+    operationFilters,
   };
 
   if (specSource.type === 'file') {
@@ -248,11 +427,17 @@ function resolveOptions(options = {}, extras = {}) {
   resolved.generatedDocsDir = path.isAbsolute(resolved.outputDir)
     ? resolved.outputDir
     : path.join(process.cwd(), resolved.outputDir);
+  const resolvedRootOutputDir = path.isAbsolute(rootOutputDir)
+    ? rootOutputDir
+    : path.join(process.cwd(), rootOutputDir);
+  resolved.generatedDocsRootDir = resolvedRootOutputDir;
   resolved.legacyDocsDir = path.join(process.cwd(), 'src', 'content', 'docs', 'api-pages');
 
   resolved.instanceId = instanceId;
   resolved.specAlias = `virtual:starlight-openapi-navigator/spec-data/${instanceId}`;
   resolved.configAlias = `virtual:starlight-openapi-navigator/config/${instanceId}`;
+  resolved.baseSlugRoot = baseSlugRoot;
+  resolved.nestUnderBase = nestUnderBase;
 
   return resolved;
 }
@@ -270,6 +455,13 @@ function createIntegration(resolvedOptions) {
   let componentsDirPath = PACKAGE_COMPONENTS_DIR;
 
   const resetGeneratedDocsDir = async () => {
+    if (
+      resolvedOptions.nestUnderBase &&
+      resolvedOptions.generatedDocsRootDir &&
+      resolvedOptions.generatedDocsRootDir !== resolvedOptions.generatedDocsDir
+    ) {
+      await fs.mkdir(resolvedOptions.generatedDocsRootDir, { recursive: true });
+    }
     if (resolvedOptions.legacyDocsDir !== resolvedOptions.generatedDocsDir) {
       await fs.rm(resolvedOptions.legacyDocsDir, { recursive: true, force: true });
     }
@@ -298,6 +490,7 @@ function createIntegration(resolvedOptions) {
 
     const chunkSourceEntries = [];
     const chunkFsSourceEntries = [];
+    const chunkAssetEntries = [];
     const chunkIdsByTag = {};
     const chunkIdToTag = {};
     const chunkFileWrites = chunks.map((chunk) => {
@@ -305,6 +498,9 @@ function createIntegration(resolvedOptions) {
       const chunkImportPath = `./chunks/${chunk.fileName}`;
       chunkSourceEntries.push(`${JSON.stringify(chunk.id)}: ${JSON.stringify(chunkImportPath)}`);
       chunkFsSourceEntries.push(`${JSON.stringify(chunk.id)}: ${JSON.stringify(chunkFilePath)}`);
+      chunkAssetEntries.push(
+        `${JSON.stringify(chunk.id)}: new URL(${JSON.stringify(chunkImportPath)}, import.meta.url)`
+      );
       if (!chunkIdsByTag[chunk.tagSlug]) {
         chunkIdsByTag[chunk.tagSlug] = [];
       }
@@ -318,12 +514,24 @@ function createIntegration(resolvedOptions) {
     await runWithLimit(chunkFileWrites, 16);
 
     const jsonFsSourceEntries = [];
+    const jsonAssetEntries = [];
     const writeJson = async (filename, data, fallback) => {
       const filePath = path.join(specDir, filename);
       const payload = JSON.stringify(data ?? fallback);
       jsonFsSourceEntries.push(`${JSON.stringify(`./${filename}`)}: ${JSON.stringify(filePath)}`);
+      jsonAssetEntries.push(
+        `${JSON.stringify(`./${filename}`)}: new URL(${JSON.stringify(`./${filename}`)}, import.meta.url)`
+      );
       await fs.writeFile(filePath, payload, 'utf8');
     };
+
+    const schemaManifest = schemaList
+      .filter((entry) => entry && typeof entry.slug === 'string' && entry.slug.length)
+      .map((entry) => ({
+        name: entry.name,
+        slug: entry.slug,
+        originalName: entry.originalName,
+      }));
 
     await Promise.all([
       writeJson('manifest.json', manifest, {}),
@@ -331,6 +539,7 @@ function createIntegration(resolvedOptions) {
       writeJson('operations-index.json', allOperationDigests, []),
       writeJson('schemas-list.json', schemaList, []),
       writeJson('schema-slug-map.json', schemaSlugMap, {}),
+      writeJson('schemas-manifest.json', schemaManifest, []),
     ]);
 
     const schemaDefinitionsDir = path.join(specDir, 'schema-definitions');
@@ -338,6 +547,7 @@ function createIntegration(resolvedOptions) {
     await fs.mkdir(schemaDefinitionsDir, { recursive: true });
     const schemaDefinitionEntries = [];
     const schemaDefinitionFsSourceEntries = [];
+    const schemaDefinitionAssetEntries = [];
     const schemaDefinitionWrites = schemaDefinitions
       .map((entry) => {
         if (!entry || typeof entry.slug !== 'string' || !entry.slug.length) return null;
@@ -346,10 +556,18 @@ function createIntegration(resolvedOptions) {
         const importPath = `./schema-definitions/${fileName}`;
         schemaDefinitionEntries.push(`${JSON.stringify(entry.slug)}: ${JSON.stringify(importPath)}`);
         schemaDefinitionFsSourceEntries.push(`${JSON.stringify(entry.slug)}: ${JSON.stringify(filePath)}`);
+        schemaDefinitionAssetEntries.push(
+          `${JSON.stringify(entry.slug)}: new URL(${JSON.stringify(importPath)}, import.meta.url)`
+        );
         return () => fs.writeFile(filePath, JSON.stringify(entry.schema), 'utf8');
       })
       .filter(Boolean);
     await runWithLimit(schemaDefinitionWrites, 8);
+    schemaDefinitions.forEach((entry) => {
+      if (entry && typeof entry === 'object' && 'schema' in entry) {
+        delete entry.schema;
+      }
+    });
 
     const modulePreludeParts = [
       `const chunkSources = {`,
@@ -357,6 +575,9 @@ function createIntegration(resolvedOptions) {
       `};`,
       `const chunkFsSources = {`,
       chunkFsSourceEntries.length ? chunkFsSourceEntries.map((entry) => `  ${entry},`).join('\n') : '',
+      `};`,
+      `const chunkAssetUrls = {`,
+      chunkAssetEntries.length ? chunkAssetEntries.map((entry) => `  ${entry},`).join('\n') : '',
       `};`,
       `const schemaDefinitionSources = {`,
       schemaDefinitionEntries.length
@@ -368,9 +589,19 @@ function createIntegration(resolvedOptions) {
         ? schemaDefinitionFsSourceEntries.map((entry) => `  ${entry},`).join('\n')
         : '',
       `};`,
+      `const schemaDefinitionAssetUrls = {`,
+      schemaDefinitionAssetEntries.length
+        ? schemaDefinitionAssetEntries.map((entry) => `  ${entry},`).join('\n')
+        : '',
+      `};`,
       `const jsonFsSources = {`,
       jsonFsSourceEntries.length
         ? jsonFsSourceEntries.map((entry) => `  ${entry},`).join('\n')
+        : '',
+      `};`,
+      `const jsonAssetUrls = {`,
+      jsonAssetEntries.length
+        ? jsonAssetEntries.map((entry) => `  ${entry},`).join('\n')
         : '',
       `};`,
     ];
@@ -426,21 +657,22 @@ function createIntegration(resolvedOptions) {
       `  const sourcePath = chunkSources[chunkId];`,
       `  if (!sourcePath) return null;`,
       `  const fsPath = chunkFsSources[chunkId];`,
+      `  const assetUrl = chunkAssetUrls[chunkId];`,
       `  if (isServerBuild) {`,
       `    const data = await loadJsonFromFs(fsPath, sourcePath);`,
       `    if (data !== null && data !== undefined) {`,
       `      return data;`,
       `    }`,
-      `    return loadJsonModule(sourcePath);`,
+      `    return loadJsonModule(sourcePath, assetUrl);`,
       `  }`,
-      `  const promise = loadJsonModule(sourcePath);`,
+      `  const promise = loadJsonModule(sourcePath, assetUrl);`,
       `  chunkPromises.set(chunkId, promise);`,
       `  const resolved = await promise;`,
       `  chunkCache.set(chunkId, resolved);`,
       `  chunkPromises.delete(chunkId);`,
       `  return resolved;`,
       `}`,
-      `async function loadJsonModule(path) {`,
+      `async function loadJsonModule(path, assetUrl) {`,
       `  if (isServerBuild) {`,
       `    const normalized = typeof path === 'string' && path.startsWith('./')`,
       `      ? path`,
@@ -462,13 +694,34 @@ function createIntegration(resolvedOptions) {
       `      return null;`,
       `    }`,
       `  }`,
-      `  const mod = await import(path);`,
-      `  return mod && typeof mod === 'object' && 'default' in mod ? mod.default : mod;`,
+      `  let fetchError = null;`,
+      `  if (typeof fetch === 'function') {`,
+      `    try {`,
+      `      const url = assetUrl instanceof URL ? assetUrl : new URL(path, import.meta.url);`,
+      `      const response = await fetch(url, { credentials: 'same-origin' });`,
+      `      if (response && response.ok) {`,
+      `        return await response.json();`,
+      `      }`,
+      `      fetchError = new Error('HTTP ' + (response ? response.status : 'unknown'));`,
+      `    } catch (error) {`,
+      `      fetchError = error instanceof Error ? error : new Error(String(error));`,
+      `    }`,
+      `  }`,
+      `  try {`,
+      `    const mod = await import(/* @vite-ignore */ path);`,
+      `    return mod && typeof mod === 'object' && 'default' in mod ? mod.default : mod;`,
+      `  } catch (importError) {`,
+      `    if (fetchError) {`,
+      `      console.error('starlight-openapi-navigator: failed to fetch json module', path, fetchError);`,
+      `    }`,
+      `    console.error('starlight-openapi-navigator: failed to import json module', path, importError);`,
+      `    return null;`,
+      `  }`,
       `}`,
       `export async function loadTags() {`,
       `  if (tagsCache) return tagsCache;`,
       `  if (!tagsPromise) {`,
-      `    tagsPromise = loadJsonModule('./tags.json');`,
+      `    tagsPromise = loadJsonModule('./tags.json', jsonAssetUrls['./tags.json']);`,
       `  }`,
       `  tagsCache = await tagsPromise;`,
       `  return tagsCache;`,
@@ -480,7 +733,7 @@ function createIntegration(resolvedOptions) {
       `export async function loadOperationIndex() {`,
       `  if (operationIndexCache) return operationIndexCache;`,
       `  if (!operationIndexPromise) {`,
-      `    operationIndexPromise = loadJsonModule('./operations-index.json');`,
+      `    operationIndexPromise = loadJsonModule('./operations-index.json', jsonAssetUrls['./operations-index.json']);`,
       `  }`,
       `  operationIndexCache = await operationIndexPromise;`,
       `  return operationIndexCache;`,
@@ -488,7 +741,7 @@ function createIntegration(resolvedOptions) {
       `export async function loadSchemas() {`,
       `  if (schemasCache) return schemasCache;`,
       `  if (!schemasPromise) {`,
-        `    schemasPromise = loadJsonModule('./schemas-list.json');`,
+        `    schemasPromise = loadJsonModule('./schemas-list.json', jsonAssetUrls['./schemas-list.json']);`,
       `  }`,
       `  const resolved = await schemasPromise;`,
       `  schemasCache = Array.isArray(resolved) ? resolved : [];`,
@@ -498,7 +751,7 @@ function createIntegration(resolvedOptions) {
       `  if (schemaMapCache) return schemaMapCache;`,
       `  if (!schemaMapPromise) {`,
         `    schemaMapPromise = (async () => {`,
-          `      const raw = await loadJsonModule('./schema-slug-map.json');`,
+          `      const raw = await loadJsonModule('./schema-slug-map.json', jsonAssetUrls['./schema-slug-map.json']);`,
           `      if (!raw || typeof raw !== 'object') return new Map();`,
           `      return new Map(Object.entries(raw));`,
         `    })();`,
@@ -510,7 +763,7 @@ function createIntegration(resolvedOptions) {
       `  if (manifestCache) return manifestCache;`,
       `  if (!manifestPromise) {`,
       `    manifestPromise = (async () => {`,
-      `      const data = await loadJsonModule('./manifest.json');`,
+      `      const data = await loadJsonModule('./manifest.json', jsonAssetUrls['./manifest.json']);`,
       `      if (!data || typeof data !== 'object') return {};`,
       `      return data;`,
       `    })();`,
@@ -518,6 +771,9 @@ function createIntegration(resolvedOptions) {
       `  manifestCache = await manifestPromise;`,
       `  return manifestCache;`,
       `}`,
+      `const schemasManifestHref = new URL('./schemas-manifest.json', import.meta.url).href;`,
+      `export const schemasManifestUrl = schemasManifestHref;`,
+      `export const schemasManifest = ${JSON.stringify(schemaManifest)};`,
       `export async function loadSchemaDefinition(schemaSlug) {`,
       `  if (!schemaSlug) return null;`,
       `  if (!isServerBuild && schemaDefinitionCache.has(schemaSlug)) {`,
@@ -528,15 +784,16 @@ function createIntegration(resolvedOptions) {
       `  }`,
       `  const sourcePath = schemaDefinitionSources[schemaSlug];`,
       `  if (!sourcePath) return null;`,
+      `  const assetUrl = schemaDefinitionAssetUrls[schemaSlug];`,
       `  if (isServerBuild) {`,
       `    const fsPath = schemaDefinitionFsSources[schemaSlug];`,
       `    const data = await loadJsonFromFs(fsPath, sourcePath);`,
       `    if (data !== null && data !== undefined) {`,
       `      return data;`,
       `    }`,
-      `    return loadJsonModule(sourcePath);`,
+      `    return loadJsonModule(sourcePath, assetUrl);`,
       `  }`,
-      `  const promise = loadJsonModule(sourcePath);`,
+      `  const promise = loadJsonModule(sourcePath, assetUrl);`,
       `  schemaDefinitionPromises.set(schemaSlug, promise);`,
       `  const resolved = await promise;`,
       `  schemaDefinitionCache.set(schemaSlug, resolved);`,
@@ -646,17 +903,18 @@ function createIntegration(resolvedOptions) {
       const rawSpec = await loadAndNormalizeSpec(resolvedOptions.specSource);
       normalizedSpec = customizeSpec(rawSpec, resolvedOptions);
       resolvedEndpointUI = resolveEndpointUIMode(
-        resolvedOptions.endpointUI,
-        normalizedSpec?.stats?.operations ?? 0
-      );
-      devProxyTable = buildDevProxyTable(normalizedSpec);
-      await writeConfigModule();
-      await writeSpecModule(normalizedSpec);
-      await generateOverviewPage(normalizedSpec, {
-        logger,
-        outputDir: resolvedOptions.generatedDocsDir,
-        baseSlug: resolvedOptions.baseSlug,
-        endpointUI: resolvedEndpointUI,
+      resolvedOptions.endpointUI,
+      normalizedSpec?.stats?.operations ?? 0
+    );
+    devProxyTable = buildDevProxyTable(normalizedSpec);
+    await writeConfigModule();
+    await writeSpecModule(normalizedSpec);
+    pruneSchemaPayloads(normalizedSpec);
+    await generateOverviewPage(normalizedSpec, {
+      logger,
+      outputDir: resolvedOptions.generatedDocsDir,
+      baseSlug: resolvedOptions.baseSlug,
+      endpointUI: resolvedEndpointUI,
         componentsDir: componentsDirPath,
       });
       await generateOperationPages(normalizedSpec, {
@@ -717,6 +975,11 @@ function createIntegration(resolvedOptions) {
 
         const codegenDirUrl = createCodegenDir();
         const baseCodegenDirPath = fileURLToPath(codegenDirUrl);
+        if (!CLEANED_CODEGEN_DIRS.has(baseCodegenDirPath)) {
+          await fs.rm(baseCodegenDirPath, { recursive: true, force: true });
+          await fs.mkdir(baseCodegenDirPath, { recursive: true });
+          CLEANED_CODEGEN_DIRS.add(baseCodegenDirPath);
+        }
         const instanceDirPath = path.join(baseCodegenDirPath, resolvedOptions.instanceId);
         await fs.rm(instanceDirPath, { recursive: true, force: true });
         await fs.mkdir(instanceDirPath, { recursive: true });
@@ -743,14 +1006,36 @@ function createIntegration(resolvedOptions) {
 
         await regenerateArtifacts(logger);
 
-        const aliasEntries = {
-          [resolvedOptions.specAlias]: pathToFileURL(specModulePath).href,
-          [resolvedOptions.configAlias]: pathToFileURL(configModulePath).href,
-        };
+    const aliasEntries = [
+      {
+        find: resolvedOptions.specAlias,
+        replacement: pathToFileURL(specModulePath).href,
+      },
+      {
+        find: resolvedOptions.configAlias,
+        replacement: pathToFileURL(configModulePath).href,
+      },
+    ];
+    if (!baseSpecAliasAssigned) {
+      aliasEntries.push({
+        find: 'virtual:starlight-openapi-navigator/spec-data',
+        replacement: pathToFileURL(specModulePath).href,
+        exact: true,
+      });
+      baseSpecAliasAssigned = true;
+    }
+    if (!baseConfigAliasAssigned) {
+      aliasEntries.push({
+        find: 'virtual:starlight-openapi-navigator/config',
+        replacement: pathToFileURL(configModulePath).href,
+        exact: true,
+      });
+      baseConfigAliasAssigned = true;
+    }
 
-        updateConfig({
-          vite: {
-            resolve: {
+    updateConfig({
+      vite: {
+        resolve: {
               alias: aliasEntries,
             },
           },
@@ -795,7 +1080,9 @@ function createIntegration(resolvedOptions) {
         }
       },
       'astro:build:start': async ({ logger }) => {
-        await regenerateArtifacts(logger);
+        if (!artifactsReady) {
+          await regenerateArtifacts(logger);
+        }
       },
     },
   };
@@ -940,6 +1227,7 @@ function customizeSpec(spec, options) {
     servers: Array.isArray(spec?.servers) ? spec.servers : [],
     tags: Array.isArray(spec?.tags) ? spec.tags : [],
     operations: Array.isArray(spec?.operations) ? spec.operations : [],
+    schemas: Array.isArray(spec?.schemas) ? spec.schemas : [],
     document: spec?.document ?? {},
   };
 
@@ -949,6 +1237,7 @@ function customizeSpec(spec, options) {
   const orderMap = createOrderMap(options.tags?.order);
   const includeLanguagesSet = createNormalizedSet(options.codeSamples?.includeLanguages);
   const renameMap = createRenameMap(options.codeSamples?.rename);
+  const operationFilters = options.operationFilters ?? { include: [], exclude: [] };
 
   cloned.tags = Array.isArray(cloned.tags)
     ? cloned.tags.filter((tag) => allowTag(tag, includeSet, excludeSet))
@@ -959,6 +1248,15 @@ function customizeSpec(spec, options) {
   cloned.operations = Array.isArray(cloned.operations)
     ? cloned.operations
         .map((operation) => {
+          if (!operation || typeof operation !== 'object') {
+            return null;
+          }
+          if (!shouldIncludeOperation(operation, operationFilters)) {
+            return null;
+          }
+          if ('raw' in operation) {
+            delete operation.raw;
+          }
           operation.tags = Array.isArray(operation.tags)
             ? operation.tags.filter((tagRef) => allowedTagSlugs.has(tagRef.slug))
             : [];
@@ -969,7 +1267,7 @@ function customizeSpec(spec, options) {
           );
           return operation;
         })
-        .filter((operation) => operation.tags.length > 0)
+        .filter((operation) => operation && operation.tags.length > 0)
     : [];
 
   const tagMap = new Map();
@@ -999,6 +1297,40 @@ function customizeSpec(spec, options) {
       sidebarLabel: override?.sidebarLabel || displayName,
     };
   });
+
+  const schemaByName = new Map(
+    Array.isArray(cloned.schemas)
+      ? cloned.schemas.map((schema) => [schema.name, schema])
+      : []
+  );
+  if (schemaByName.size) {
+    const operationSchemaRefs = new Set();
+    cloned.operations.forEach((operation) => collectSchemaRefs(operation, operationSchemaRefs));
+    const includedSchemaNames = resolveSchemaDependencies(operationSchemaRefs, schemaByName);
+    if (includedSchemaNames.size) {
+      cloned.schemas = cloned.schemas.filter((schema) => includedSchemaNames.has(schema.name));
+      if (
+        isPlainObject(cloned.document?.components)
+        && isPlainObject(cloned.document.components.schemas)
+      ) {
+        const filteredSchemas = {};
+        includedSchemaNames.forEach((name) => {
+          if (Object.prototype.hasOwnProperty.call(cloned.document.components.schemas, name)) {
+            filteredSchemas[name] = cloned.document.components.schemas[name];
+          }
+        });
+        cloned.document.components.schemas = filteredSchemas;
+      }
+    } else {
+      cloned.schemas = [];
+      if (
+        isPlainObject(cloned.document?.components)
+        && isPlainObject(cloned.document.components.schemas)
+      ) {
+        cloned.document.components.schemas = {};
+      }
+    }
+  }
 
   cloned.tags.sort((a, b) => {
     const orderA = getTagOrder(orderMap, a);
@@ -1262,6 +1594,109 @@ function createOverridesMap(overrides = {}) {
   return map;
 }
 
+function normalizeOperationFilters(raw) {
+  const filters = { include: [], exclude: [] };
+  if (!raw || typeof raw !== 'object') return filters;
+
+  const process = (entries, target) => {
+    if (!Array.isArray(entries)) return;
+    entries.forEach((entry) => {
+      const matcher = normalizeOperationMatcher(entry);
+      if (matcher) target.push(matcher);
+    });
+  };
+
+  process(raw.include, filters.include);
+  process(raw.exclude, filters.exclude);
+  return filters;
+}
+
+function normalizeOperationMatcher(entry) {
+  if (!entry) return null;
+  if (typeof entry === 'string') {
+    const path = entry.trim();
+    if (!path) return null;
+    return {
+      pathPrefix: ensureLeadingSlash(path),
+      methods: null,
+      slug: null,
+      pathExact: null,
+    };
+  }
+  if (typeof entry !== 'object') return null;
+
+  const slug = typeof entry.slug === 'string' && entry.slug.trim().length ? entry.slug.trim() : null;
+  const pathExact = typeof entry.path === 'string' && entry.path.trim().length
+    ? ensureLeadingSlash(entry.path.trim())
+    : null;
+  const pathPrefix = typeof entry.pathStartsWith === 'string' && entry.pathStartsWith.trim().length
+    ? ensureLeadingSlash(entry.pathStartsWith.trim())
+    : null;
+
+  let methods = null;
+  if (entry.method || entry.methods) {
+    const values = Array.isArray(entry.methods) ? entry.methods : [entry.method];
+    const set = new Set();
+    values.forEach((value) => {
+      if (typeof value === 'string' && value.trim()) {
+        set.add(value.trim().toUpperCase());
+      }
+    });
+    if (set.size) {
+      methods = set;
+    }
+  }
+
+  if (!slug && !pathExact && !pathPrefix && !methods) {
+    return null;
+  }
+
+  return {
+    slug,
+    pathExact,
+    pathPrefix,
+    methods,
+  };
+}
+
+function shouldIncludeOperation(operation, filters) {
+  if (!filters) return true;
+
+  const allowByInclude = !filters.include.length
+    || filters.include.some((matcher) => operationMatchesFilter(operation, matcher));
+  if (!allowByInclude) return false;
+
+  const excluded = filters.exclude.length
+    && filters.exclude.some((matcher) => operationMatchesFilter(operation, matcher));
+  if (excluded) return false;
+
+  return true;
+}
+
+function operationMatchesFilter(operation, matcher) {
+  if (!matcher) return false;
+  const method = typeof operation?.method === 'string' ? operation.method.toUpperCase() : '';
+  const path = typeof operation?.path === 'string' ? operation.path : '';
+  const slug = typeof operation?.slug === 'string' ? operation.slug : '';
+
+  if (matcher.slug && matcher.slug !== slug) {
+    return false;
+  }
+  if (matcher.methods && matcher.methods.size && !matcher.methods.has(method)) {
+    return false;
+  }
+  if (matcher.pathExact && matcher.pathExact !== path) {
+    return false;
+  }
+  if (matcher.pathPrefix && !path.startsWith(matcher.pathPrefix)) {
+    return false;
+  }
+  if (!matcher.slug && !matcher.pathExact && !matcher.pathPrefix && matcher.methods) {
+    return matcher.methods.has(method);
+  }
+  return true;
+}
+
 function findOverride(map, tag) {
   if (!(map instanceof Map)) return undefined;
   const nameKey = normalizeTagKey(tag?.name);
@@ -1491,8 +1926,13 @@ function createRuntimeSpecArtifacts(spec) {
       if (slug) {
         schemaSlugMap[entry.name] = slug;
       }
+      const displayName =
+        typeof entry.displayName === 'string' && entry.displayName.trim()
+          ? entry.displayName.trim()
+          : entry.name;
       schemaList.push({
-        name: entry.name,
+        name: displayName,
+        originalName: entry.name,
         slug: slug,
         description: entry.description,
       });
@@ -1500,9 +1940,9 @@ function createRuntimeSpecArtifacts(spec) {
         const rawSlug =
           typeof slug === 'string' && slug.length
             ? slug
-            : typeof entry.name === 'string' && entry.name.length
-              ? entry.name.toLowerCase()
-              : '';
+          : typeof entry.name === 'string' && entry.name.length
+            ? entry.name.toLowerCase()
+            : '';
         const safeSlug = rawSlug
           .replace(/[^a-zA-Z0-9._-]/g, '-')
           .replace(/-+/g, '-')
@@ -1510,7 +1950,7 @@ function createRuntimeSpecArtifacts(spec) {
         if (safeSlug) {
           schemaDefinitions.push({
             slug: safeSlug,
-            name: entry.name,
+            name: displayName,
             schema: entry.schema,
           });
         }
@@ -1531,10 +1971,10 @@ function createRuntimeSpecArtifacts(spec) {
     allOperationDigests,
     schemaList,
     schemaSlugMap,
-    schemaDefinitions,
-    chunks,
-    operationChunkLookup,
-  };
+  schemaDefinitions,
+  chunks,
+  operationChunkLookup,
+};
 }
 
 function stripOperationForChunk(operation) {

@@ -1,21 +1,65 @@
 ---
+import { DEFAULT_BASE_SLUG, buildSpecPath, getBasePath } from '../runtime/config.js';
+
 const {
   schemas = [],
   currentSlug = null,
   label = 'Schemas',
   placeholder = 'Search schemas',
   size = 'wide',
+  baseSlug = DEFAULT_BASE_SLUG,
+  hydrateOnClient = false,
 } = Astro.props;
+const baseUrl = getBasePath();
+const resolvedBaseSlug =
+  typeof baseSlug === 'string' && baseSlug.length ? baseSlug : DEFAULT_BASE_SLUG;
+const currentSlugValue = typeof currentSlug === 'string' ? currentSlug : '';
+const hydrateFlag = hydrateOnClient ? 'true' : 'false';
+
+const trimSegment = (value) => value.replace(/^\/+/g, '').replace(/\/+$/g, '');
+const buildJoinedPath = (...segments) => {
+  const joined = segments
+    .map((segment) => (segment || '').toString().trim())
+    .filter(Boolean)
+    .map((segment) => trimSegment(segment))
+    .filter(Boolean)
+    .join('/');
+  return joined ? `${joined}/` : '';
+};
+const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+const buildHref = (slug) => `${normalizedBaseUrl}${buildJoinedPath(resolvedBaseSlug, 'schemas', slug)}`;
 
 const normalized = Array.isArray(schemas)
-  ? schemas.filter((schema) => schema && typeof schema.slug === 'string' && typeof schema.name === 'string')
+  ? schemas
+      .filter((schema) => schema && typeof schema.name === 'string' && typeof schema.slug === 'string')
+      .map((schema) => {
+        const slug = schema.slug;
+        const providedHref = typeof schema.href === 'string' ? schema.href : '';
+        const isExternal = /^https?:\/\//i.test(providedHref.trim());
+        const href = isExternal
+          ? providedHref
+          : buildSpecPath(resolvedBaseSlug, 'schemas', slug);
+        return {
+          ...schema,
+          slug,
+          href,
+        };
+      })
   : [];
 
 const inputId = `schema-picker-${Math.random().toString(36).slice(2, 10)}`;
 const listId = `${inputId}-list`;
 ---
 
-<div class={`schema-picker schema-picker--${size}`} data-schema-picker>
+<div
+  class={`schema-picker schema-picker--${size}`}
+  data-schema-picker
+  data-schema-picker-id={inputId}
+  data-schema-picker-base={resolvedBaseSlug}
+  data-schema-picker-base-url={normalizedBaseUrl}
+  data-schema-picker-current={currentSlugValue}
+  data-schema-picker-hydrate={hydrateFlag}
+>
   <label class="schema-picker__label" for={inputId}>{label}</label>
   <div class="schema-picker__input-row">
     <input
@@ -44,7 +88,9 @@ const listId = `${inputId}-list`;
           class={`schema-picker__option${schema.slug === currentSlug ? ' is-active' : ''}`}
           href={schema.href}
           role="option"
-          data-schema-search={`${schema.name} ${schema.slug}`.toLowerCase()}
+          data-schema-search={`${[schema.name, schema.slug, schema.originalName]
+            .filter(Boolean)
+            .join(' ')}`.toLowerCase()}
         >
           <span class="schema-picker__name">{schema.name}</span>
         </a>
@@ -54,32 +100,77 @@ const listId = `${inputId}-list`;
   <p class="schema-picker__no-results" data-schema-picker-empty hidden>No matching schemas.</p>
 </div>
 
-<script is:inline>
-  (() => {
-    const container = document.currentScript?.previousElementSibling;
+<script>
+  import { schemasManifestUrl } from 'virtual:starlight-openapi-navigator/spec-data';
+
+  const MANIFEST_CACHE_KEY = '__starlightOpenApiSchemasManifest__';
+
+  const getManifestPromise = () => {
+    const scope = window;
+    if (!scope[MANIFEST_CACHE_KEY]) {
+      scope[MANIFEST_CACHE_KEY] = fetch(schemasManifestUrl, { credentials: 'same-origin' })
+        .then((response) => {
+          if (!response || !response.ok) {
+            throw new Error(`HTTP ${response ? response.status : 'unknown'}`);
+          }
+          return response.json();
+        })
+        .then((data) => (Array.isArray(data) ? data : []))
+        .catch((error) => {
+          console.error('starlight-openapi-navigator: failed to load schema manifest', error);
+          return [];
+        });
+    }
+    return scope[MANIFEST_CACHE_KEY];
+  };
+
+  const trimSegment = (value) => value.replace(/^\/+/g, '').replace(/\/+$/g, '');
+  const buildJoinedPath = (...segments) => {
+    const joined = segments
+      .map((segment) => (segment || '').toString().trim())
+      .filter(Boolean)
+      .map((segment) => trimSegment(segment))
+      .filter(Boolean)
+      .join('/');
+    return joined ? `${joined}/` : '';
+  };
+
+  const buildHref = (baseUrl, baseSlug, slug) => `${baseUrl}${buildJoinedPath(baseSlug, 'schemas', slug)}`;
+
+  const initializeContainer = (container) => {
     if (!(container instanceof HTMLElement)) return;
+    if (container.dataset.schemaPickerInitialized === 'true') return;
+    container.dataset.schemaPickerInitialized = 'true';
+
     const input = container.querySelector('[data-schema-picker-input]');
     const list = container.querySelector('[data-schema-picker-list]');
     const emptyHint = container.querySelector('[data-schema-picker-empty]');
     if (!(input instanceof HTMLInputElement) || !(list instanceof HTMLElement)) return;
 
-    /** @type {Array<{ element: HTMLElement, name: string }>} */
-    const options = Array.from(list.querySelectorAll('[data-schema-search]'))
-      .filter((node) => node instanceof HTMLElement)
-      .map((element) => ({
-        element,
-        searchText: (element.dataset.schemaSearch || '').toLowerCase(),
-      }));
+    const baseSlug = container.dataset.schemaPickerBase || '';
+    const baseUrl = container.dataset.schemaPickerBaseUrl || '/';
+    const currentSlug = container.dataset.schemaPickerCurrent || '';
+    const hydrateOnClient = container.dataset.schemaPickerHydrate === 'true';
+
+    let isHydrating = false;
+    /** @type {Array<{ element: HTMLElement, searchText: string }>} */
+    let options = [];
+    let hasScrolledToActive = false;
 
     const filterOptions = (term) => {
-      if (!options.length) return;
       const query = term.trim().toLowerCase();
       let visible = 0;
-      if (!query) {
+      if (!options.length) {
+        if (emptyHint instanceof HTMLElement) {
+          emptyHint.hidden = false;
+        }
+        return;
+      }
+      if (!query.length) {
         options.forEach(({ element }) => {
           element.hidden = false;
+          visible += 1;
         });
-        visible = options.length;
       } else {
         const tokens = query.split(/\s+/).filter(Boolean);
         options.forEach(({ element, searchText }) => {
@@ -93,17 +184,100 @@ const listId = `${inputId}-list`;
       }
     };
 
+    const rebuildOptions = () => {
+      options = Array.from(list.querySelectorAll('[data-schema-search]'))
+        .filter((node) => node instanceof HTMLElement)
+        .map((element) => ({
+          element,
+          searchText: (element.dataset.schemaSearch || '').toLowerCase(),
+        }));
+      filterOptions(input.value);
+    };
+
+      const renderSchemas = (schemas) => {
+        if (!Array.isArray(schemas) || !schemas.length) return;
+        const fragment = document.createDocumentFragment();
+        schemas.forEach((schema) => {
+          if (!schema || typeof schema.slug !== 'string' || !schema.slug.length) return;
+        const option = document.createElement('a');
+        option.className = 'schema-picker__option';
+        option.href = schema.href || buildHref(baseUrl, baseSlug, schema.slug);
+        option.role = 'option';
+        const searchText = [schema.name, schema.slug, schema.originalName]
+          .filter((value) => typeof value === 'string' && value.length)
+          .join(' ')
+          .toLowerCase();
+        option.dataset.schemaSearch = searchText;
+        if (schema.slug === currentSlug) {
+          option.classList.add('is-active');
+        }
+        const nameEl = document.createElement('span');
+        nameEl.className = 'schema-picker__name';
+        nameEl.textContent = schema.name || schema.slug;
+        option.append(nameEl);
+        fragment.append(option);
+      });
+        list.innerHTML = '';
+        list.append(fragment);
+        rebuildOptions();
+        if (!hasScrolledToActive) {
+          const active = list.querySelector('.schema-picker__option.is-active');
+          if (active instanceof HTMLElement) {
+            active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            hasScrolledToActive = true;
+          }
+        }
+      };
+
+    const hydrateSchemas = async () => {
+      if (isHydrating) return;
+      isHydrating = true;
+      try {
+        const manifest = await getManifestPromise();
+        if (!Array.isArray(manifest) || !manifest.length) return;
+        const mapped = manifest
+          .filter((schema) => schema && typeof schema.slug === 'string' && schema.slug.length)
+          .map((schema) => ({
+            name: schema.name || schema.slug,
+            originalName: schema.originalName,
+            slug: schema.slug,
+            href: buildHref(baseUrl, baseSlug, schema.slug),
+          }));
+        renderSchemas(mapped);
+      } catch (error) {
+        console.error('starlight-openapi-navigator: unable to hydrate schemas', error);
+      } finally {
+        isHydrating = false;
+      }
+    };
+
     const handleFilter = () => filterOptions(input.value);
 
     input.addEventListener('input', handleFilter);
     input.addEventListener('keyup', handleFilter);
 
-    // Initial render (in case we hydrate on a page with preset text).
-    filterOptions(input.value);
-  })();
+    rebuildOptions();
+
+    if (hydrateOnClient || options.length === 0) {
+      hydrateSchemas().finally(() => {
+        filterOptions(input.value);
+      });
+    }
+  };
+
+  const init = () => {
+    const containers = document.querySelectorAll('[data-schema-picker]');
+    containers.forEach((container) => initializeContainer(container));
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init, { once: true });
+  } else {
+    init();
+  }
 </script>
 
-<style scoped>
+<style is:global>
 .schema-picker {
   display: flex;
   flex-direction: column;

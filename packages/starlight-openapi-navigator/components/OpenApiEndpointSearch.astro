@@ -39,7 +39,7 @@ const resolvedBaseSlug =
     <ul id={resultsId} class="endpoint-search__results" role="listbox" hidden></ul>
   </div>
   {helperText && <p class="endpoint-search__hint">{helperText}</p>}
-  <script type="module">
+  <script>
     const operationsCache = new Map();
 
     async function loadOperations(baseSlug) {

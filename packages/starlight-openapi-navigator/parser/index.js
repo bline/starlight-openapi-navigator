@@ -2,6 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { parse } from 'yaml';
 
+import { toSlug } from '../runtime/slug.js';
+
 const HTTP_METHODS = new Set([
   'get',
   'put',
@@ -84,6 +86,7 @@ const DEFAULT_UNTAGGED_NAME = 'Untagged';
  * @typedef {object} NormalizedSchema
  * @property {string} name
  * @property {string} slug
+ * @property {string | undefined} displayName
  * @property {Record<string, unknown>} schema
  * @property {string | undefined} description
  * @property {Record<string, unknown>} extensions
@@ -511,15 +514,6 @@ function createSlugFactory(defaultSlug = 'item') {
   };
 }
 
-function toSlug(value, fallback = 'item') {
-  const base = typeof value === 'string' && value.trim().length ? value.trim() : fallback;
-  const slug = base
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return slug || fallback;
-}
-
 function buildExternalDocs(externalDocs) {
   if (!isPlainObject(externalDocs)) return undefined;
   if (typeof externalDocs.url !== 'string') return undefined;
@@ -780,8 +774,41 @@ function normalizeSchemas(rawSchemas) {
   return Object.entries(rawSchemas).map(([name, schema]) => ({
     name,
     slug: schemaSlugFactory(name, name),
+    displayName: deriveSchemaDisplayName(name, schema),
     schema: isPlainObject(schema) ? schema : {},
     description: typeof schema?.description === 'string' ? schema.description : undefined,
     extensions: pickExtensions(schema),
   }));
+}
+
+function deriveSchemaDisplayName(name, schema) {
+  const title = typeof schema?.title === 'string' ? schema.title.trim() : '';
+  const source = title || extractNameSegment(name);
+  if (!source) return title || name;
+  return formatDisplayName(source);
+}
+
+function extractNameSegment(value) {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  const segments = value.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  if (!segments.length) return value.trim();
+  return segments[segments.length - 1];
+}
+
+function formatDisplayName(value) {
+  const normalized = value
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return value;
+  return normalized
+    .split(' ')
+    .map((word) => {
+      if (!word) return word;
+      if (word.toUpperCase() === word) return word;
+      return word[0].toUpperCase() + word.slice(1);
+    })
+    .join(' ');
 }
