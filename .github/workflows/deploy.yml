@@ -2,7 +2,7 @@ name: Deploy demo to GitHub Pages
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -11,27 +11,37 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: pages
   cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: pnpm/action-setup@v4
-        with: { version: 9 }
-      - uses: actions/setup-node@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: pnpm
-      - run: pnpm i --frozen-lockfile
-      - run: pnpm --filter ./packages/demo build
+          # IMPORTANT: point at the root lockfile in your monorepo
+          cache-dependency-path: pnpm-lock.yaml
 
-      # (Optional) prevent Jekyll processing; harmless if present
-      - run: touch packages/demo/dist/.nojekyll
+      - name: Enable corepack (pnpm)
+        run: corepack enable
 
-      # Upload the demo’s build output
-      - uses: actions/upload-pages-artifact@v3
+      - name: Install dependencies (workspace root)
+        run: pnpm install --frozen-lockfile
+
+      # Build just the demo package (and any deps it needs)
+      # either filter by package name...
+      - name: Build demo
+        run: pnpm --filter demo build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
           path: packages/demo/dist
 
