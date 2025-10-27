@@ -6,6 +6,10 @@ This repository is a pnpm workspace with two packages.
 - `packages/sandbox/` is the demo Starlight site. It depends on the workspace plugin via `workspace:*` and lives entirely inside the repo for quick smoke checks.
 Keep the top-level `TODO.md` roadmap in sync whenever a tracked milestone ships.
 
+## Astro advice
+- Astro automatically adds `type="module"` to `<script>` tags. If a script tag has any attribute at all, Astro does not process it and renders it as is on the page. If you add an attribute to a `<script>` tag, this processing does not happen which means imports do not work as expected.
+- Astro does not allow you to embed build level variables in `<script>` as `${}` or `{}`, you must use a separate `<script type="application/json" set:html={JSON.stringify(data)} />` or you must use `data-*` attributes and fetch these from the `<script>` that you need the data.
+
 ## Build, Test, and Development Commands
 Use Node 18+ and pnpm. All commands run from the repo root.
 - `pnpm install` — links workspace packages and installs Astro/Starlight for the sandbox.
